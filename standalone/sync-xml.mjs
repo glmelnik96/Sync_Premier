@@ -153,7 +153,12 @@ async function main() {
       .replace(/<start>-?\d+<\/start>/, `<start>${s}</start>`)
       .replace(/<end>-?\d+<\/end>/, `<end>${e}</end>`)
       .replace(/<in>-?\d+<\/in>/, `<in>${c.plan.inP}</in>`)
-      .replace(/<out>-?\d+<\/out>/, `<out>${c.plan.out}</out>`);
+      .replace(/<out>-?\d+<\/out>/, `<out>${c.plan.out}</out>`)
+      // КРИТИЧНО: Premiere читает pproTicksIn/Out (source in/out в тиках), ИГНОРИРУЯ
+      // обобщённые <in>/<out>. Без их обновления обрезка inPoint не применяется →
+      // рассинхрон рекордеров (in сбрасывается в исходный). Тики = кадры * 10594584000.
+      .replace(/<pproTicksIn>-?\d+<\/pproTicksIn>/, `<pproTicksIn>${c.plan.inP * TICKS_PER_FRAME}</pproTicksIn>`)
+      .replace(/<pproTicksOut>-?\d+<\/pproTicksOut>/, `<pproTicksOut>${c.plan.out * TICKS_PER_FRAME}</pproTicksOut>`);
     if (isUns) block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
     if (mode === 'synced') { synced++; if (e > syncedEndF) syncedEndF = e; }
     else { unsynced++; if (e > unsyncedEndF) unsyncedEndF = e; }
