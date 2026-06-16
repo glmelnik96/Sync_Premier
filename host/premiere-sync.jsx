@@ -210,6 +210,51 @@ $._SYNC_.backupActiveSequence = function () {
   }
 };
 
+/** Уплотнить дорожку: каждый клип прижимается к концу предыдущего (закрытие пауз/перекрытий). */
+$._SYNC_.rippleCloseGaps = function (paramsJson) {
+  try {
+    var p = JSON.parse(paramsJson);            /* {trackType, trackIndex} */
+    if (!app.project || !app.project.activeSequence) return JSON.stringify({ ok: false, error: 'Нет активной секвенции' });
+    var seq = app.project.activeSequence;
+    var track = (p.trackType === 'audio' ? seq.audioTracks : seq.videoTracks)[p.trackIndex];
+    if (!track) return JSON.stringify({ ok: false, error: 'Дорожка не найдена' });
+    var items = [];
+    for (var i = 0; i < track.clips.numItems; i++) items.push(track.clips[i]);
+    items.sort(function (a, b) { return parseFloat(a.start.ticks) - parseFloat(b.start.ticks); });
+    var cursor = items.length ? parseFloat(items[0].start.ticks) : 0;
+    var moved = 0;
+    for (var j = 0; j < items.length; j++) {
+      var c = items[j];
+      var dur = parseFloat(c.end.ticks) - parseFloat(c.start.ticks);
+      if (Math.abs(parseFloat(c.start.ticks) - cursor) > 1) {
+        $._SYNC_._setClipPosition(c, cursor, dur);
+        moved++;
+      }
+      cursor = parseFloat(c.start.ticks) + dur;
+    }
+    return JSON.stringify({ ok: true, movedClips: moved });
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
+  }
+};
+
+/** Растяжка клипа по скорости для коррекции дрейфа. ratio>1 = быстрее (короче). */
+$._SYNC_.setClipSpeed = function (paramsJson) {
+  try {
+    var p = JSON.parse(paramsJson);            /* {nodeId, ratio} */
+    if (!app.project || !app.project.activeSequence) return JSON.stringify({ ok: false, error: 'Нет активной секвенции' });
+    var seq = app.project.activeSequence;
+    var found = $._SYNC_._findClipByNodeId(seq, p.nodeId);
+    if (!found) return JSON.stringify({ ok: false, error: 'Клип не найден' });
+    var clip = found.clip;
+    if (typeof clip.setSpeed !== 'function') return JSON.stringify({ ok: false, error: 'setSpeed недоступен (нужен ffmpeg-фолбэк R5)' });
+    clip.setSpeed(parseFloat(p.ratio));
+    return JSON.stringify({ ok: true, nodeId: String(p.nodeId), ratio: p.ratio });
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
+  }
+};
+
 /** Активировать секвенцию по sequenceID (Revert на бэкап). */
 $._SYNC_.activateSequenceById = function (seqId) {
   try {

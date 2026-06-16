@@ -102,6 +102,16 @@
       this.evalJson('$._SYNC_.moveClip("' + json + '")', cb);
     },
 
+    rippleCloseGaps: function (trackType, trackIndex, cb) {
+      var json = escapeDoubleQuoted(JSON.stringify({ trackType: trackType, trackIndex: trackIndex }));
+      this.evalJson('$._SYNC_.rippleCloseGaps("' + json + '")', cb);
+    },
+
+    setClipSpeed: function (nodeId, ratio, cb) {
+      var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, ratio: ratio }));
+      this.evalJson('$._SYNC_.setClipSpeed("' + json + '")', cb);
+    },
+
     backupActiveSequence: function (cb) { this.evalJson('$._SYNC_.backupActiveSequence()', cb); },
 
     activateSequenceById: function (seqId, cb) {
