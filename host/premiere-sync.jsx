@@ -155,7 +155,7 @@ $._SYNC_._setClipPosition = function (clip, newStartTicks, durTicks) {
   }
 };
 
-/** Сдвиг клипа (и связанных A/V — Premiere двигает linkage сам) на deltaTicks. */
+/** Сдвиг клипа И ВСЕХ связанных A/V-элементов на одну deltaTicks (сохраняет линковку). */
 $._SYNC_.moveClip = function (paramsJson) {
   try {
     var p = JSON.parse(paramsJson);            /* {nodeId, deltaTicks} */
@@ -165,12 +165,36 @@ $._SYNC_.moveClip = function (paramsJson) {
     if (!found) return JSON.stringify({ ok: false, error: 'Клип не найден: ' + p.nodeId });
     var clip = found.clip;
     var delta = parseFloat(p.deltaTicks);
-    var curStart = parseFloat(clip.start.ticks);
-    var dur = parseFloat(clip.end.ticks) - curStart;
-    var newStart = curStart + delta;
-    if (newStart < 0) newStart = 0;
-    $._SYNC_._setClipPosition(clip, newStart, dur);
-    return JSON.stringify({ ok: true, nodeId: String(p.nodeId), newStartTicks: String(Math.round(newStart)) });
+    /* Если delta отрицательная и какой-либо из связанных элементов уехал бы < 0 —
+       ограничиваем delta так, чтобы самый левый элемент встал ровно в 0 (сохраняем
+       относительную линковку между видео и аудио). */
+    var items = [clip];
+    try {
+      if (typeof clip.getLinkedItems === 'function') {
+        var li = clip.getLinkedItems();
+        if (li && li.numItems) {
+          items = [];
+          for (var q = 0; q < li.numItems; q++) items.push(li[q]);
+        }
+      }
+    } catch (eL) { items = [clip]; }
+
+    var minStart = null, ii;
+    for (ii = 0; ii < items.length; ii++) {
+      var st = parseFloat(items[ii].start.ticks);
+      if (minStart === null || st < minStart) minStart = st;
+    }
+    if (minStart + delta < 0) delta = -minStart; /* клампим единым сдвигом, без разрыва линковки */
+
+    var moved = 0;
+    for (ii = 0; ii < items.length; ii++) {
+      var it = items[ii];
+      var cs = parseFloat(it.start.ticks);
+      var dur = parseFloat(it.end.ticks) - cs;
+      $._SYNC_._setClipPosition(it, cs + delta, dur);
+      moved++;
+    }
+    return JSON.stringify({ ok: true, nodeId: String(p.nodeId), movedItems: moved, appliedDeltaTicks: String(Math.round(delta)) });
   } catch (e) {
     return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
   }

@@ -60,29 +60,18 @@
       revertBtn.disabled = !backupSeqId;
       var toMove = lastRows.filter(function (r) { return r.status === 'sync' || r.status === 'drift'; });
       var i = 0;
+      /* СИНХРОНИЗАЦИЯ: только сдвиг клипов (вместе со связанным A/V).
+         Ripple-закрытие пауз НЕ применяем — паузы между клипами в синхро-раскладке
+         осмысленны (камера не писала), уплотнение разрушило бы выравнивание. */
       (function next() {
         if (i >= toMove.length) {
-          /* Task 12: ripple-закрытие пауз на затронутых дорожках */
-          var tracks = {}; toMove.forEach(function (r) { tracks[r.trackIndex] = true; });
-          var idxs = Object.keys(tracks); var ti = 0;
-          (function nextTrack() {
-            if (ti >= idxs.length) { setStatus('Применено + ripple: ' + toMove.length + ' клипов'); return; }
-            window.PremiereBridge.rippleCloseGaps('audio', parseInt(idxs[ti++], 10), function () { nextTrack(); });
-          })();
+          setStatus('Синхронизировано: ' + toMove.length + ' клипов');
           return;
         }
         var r = toMove[i++];
         var deltaTicks = Math.round(r.shiftSec * TICKS_PER_SECOND);
         window.PremiereBridge.moveClip(r.nodeId, deltaTicks, function (e) {
           if (e) { setStatus('Ошибка moveClip: ' + e.message); return; }
-          /* Task 13: коррекция дрейфа для drift-клипов */
-          if (r.status === 'drift') {
-            window.PremiereBridge.setClipSpeed(r.nodeId, 1 + r.slope, function (e2, d2) {
-              if (e2 || !d2 || !d2.ok) setStatus('Дрейф ' + r.name + ': нативная коррекция недоступна (R5)');
-              next();
-            });
-            return;
-          }
           setStatus('Сдвинуто ' + i + '/' + toMove.length); next();
         });
       })();
