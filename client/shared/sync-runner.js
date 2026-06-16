@@ -150,16 +150,18 @@
       for (var c = 0; c < srcEnvs.length; c++) if (!longest || srcEnvs[c].env.length > byPath[longest].env.length) longest = srcEnvs[c].path;
       var graph = SG.resolveSourceOffsets(paths, pairs, { minCorr: minCorr, preferredRoot: opt.preferredRoot || longest });
 
-      /* 4. якорь = клип корневого источника с минимальным startSec → base. */
+      /* 4. base: сдвигаем всю синхро-раскладку так, чтобы самый ранний клип лёг в 0
+         (сохраняем относительное выравнивание, избегаем отрицательных позиций). */
       var clips = snapshot.clips || [];
-      var anchorClip = null;
-      for (var a = 0; a < clips.length; a++) {
-        var cc = clips[a];
-        if (cc.trackType === 'audio' && cc.mediaPath === graph.root) {
-          if (!anchorClip || cc.startSec < anchorClip.startSec) anchorClip = cc;
-        }
+      var minRaw = null;
+      var i2;
+      for (i2 = 0; i2 < clips.length; i2++) {
+        var cm = clips[i2];
+        if (cm.trackType !== 'audio' || !cm.mediaPath || !graph.offsets.hasOwnProperty(cm.mediaPath)) continue;
+        var raw = cm.inPointSec + graph.offsets[cm.mediaPath];  /* позиция начала клипа в часах корня */
+        if (minRaw === null || raw < minRaw) minRaw = raw;
       }
-      var base = anchorClip ? (anchorClip.startSec - anchorClip.inPointSec) : 0;
+      var base = (minRaw === null) ? 0 : -minRaw;
 
       /* 5. цель каждого аудиоклипа. */
       var rows = [];
