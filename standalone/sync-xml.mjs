@@ -117,14 +117,35 @@ async function main() {
     if (c.plan.end <= c.plan.start) { c.plan.drop = true; dropped++; } // полностью вне видео
   }
 
-  // ── Фаза 4: несвязанные клипы → выключить (enabled=FALSE) + красный label ──
-  for (const c of clips) if (c.plan && c.plan.status === 'unsynced') c.plan.enabled = false;
-
-  // ── Фаза 5: глобальный сдвиг к 0 (самый ранний оставшийся клип в 0) ──
+  // ── Фаза 5: глобальный сдвиг СИНХРОННЫХ к 0 (самый ранний синхронный клип в 0) ──
   let gmin = null;
-  for (const c of clips) if (c.plan && !c.plan.drop) { if (gmin === null || c.plan.start < gmin) gmin = c.plan.start; }
+  for (const c of clips) if (c.plan && !c.plan.drop && c.plan.status !== 'unsynced') { if (gmin === null || c.plan.start < gmin) gmin = c.plan.start; }
   if (gmin === null) gmin = 0;
-  for (const c of clips) if (c.plan && !c.plan.drop) { c.plan.start -= gmin; c.plan.end -= gmin; }
+  for (const c of clips) if (c.plan && !c.plan.drop && c.plan.status !== 'unsynced') { c.plan.start -= gmin; c.plan.end -= gmin; }
+
+  // конец синхронного контента (после сдвига)
+  let syncedEnd = 0;
+  for (const c of clips) if (c.plan && !c.plan.drop && c.plan.status !== 'unsynced') { if (c.plan.end > syncedEnd) syncedEnd = c.plan.end; }
+
+  // ── Фаза 5b: несвязанные → ВПЛОТНУЮ в конец синхронного контента, ВКЛЮЧЕНЫ, красный
+  // label. У несвязанного клипа есть СВОЁ видео → стоп-кадра нет; монтажёр видит красный
+  // блок и разбирается вручную. Группировка по инстансу (mediaPath): связанные video+audio
+  // копии одного клипа двигаются как единое целое (сохраняем относительную раскладку). */
+  const GAP = 12; // ~0.5с в кадрах
+  let cursor = syncedEnd + GAP;
+  const ugroups = {}, uorder = [];
+  for (const c of clips) {
+    if (!c.plan || c.plan.drop || c.plan.status !== 'unsynced') continue;
+    if (!ugroups[c.path]) { ugroups[c.path] = { minStart: c.plan.start, members: [] }; uorder.push(c.path); }
+    ugroups[c.path].members.push(c);
+    if (c.plan.start < ugroups[c.path].minStart) ugroups[c.path].minStart = c.plan.start;
+  }
+  uorder.sort((a, b) => ugroups[a].minStart - ugroups[b].minStart);
+  for (const gk of uorder) {
+    const g = ugroups[gk], base = g.minStart, delta = cursor - base; let gend = 0;
+    for (const c of g.members) { c.plan.start += delta; c.plan.end += delta; if (c.plan.end > gend) gend = c.plan.end; }
+    cursor = gend + GAP;
+  }
 
   // ── Фаза 6: записать XML ──
   let synced = 0, unsynced = 0, untouched = 0, maxEndFrames = 0;
@@ -141,8 +162,8 @@ async function main() {
         .replace(/<in>-?\d+<\/in>/, `<in>${c.plan.inP}</in>`)
         .replace(/<out>-?\d+<\/out>/, `<out>${c.plan.out}</out>`);
       if (c.plan.end > maxEndFrames) maxEndFrames = c.plan.end;
-      if (!c.plan.enabled) {
-        block = block.replace(/<enabled>TRUE<\/enabled>/, '<enabled>FALSE</enabled>');
+      if (c.plan.status === 'unsynced') {
+        // несвязанный: ВКЛЮЧЁН (своё видео играет), помечен красным для ручного разбора
         block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
         unsynced++;
       } else synced++;
