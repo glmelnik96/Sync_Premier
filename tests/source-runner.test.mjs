@@ -54,13 +54,16 @@ test('runSourceSync: разбросанные клипы разных источ
   const r = await ctx.SyncRunner.runSourceSync(snapshot, deps, { minCorr: 0.4 });
   const byNode = {}; r.forEach((x) => { byNode[x.nodeId] = x; });
 
-  // anchor = ref clip (root), base = 0 - 0 = 0.
-  // camA target = base + inPoint(2) + off(10) = 12с; camB target = 0 + 0 + 24 = 24с.
-  const camATarget = byNode.a1.shiftSec + 555;  // shift + текущая позиция
-  const camBTarget = byNode.b1.shiftSec + 800;
-  assert.ok(Math.abs(camATarget - 12) < dt * 2, `camA target=${camATarget}, ожидалось 12`);
-  assert.ok(Math.abs(camBTarget - 24) < dt * 2, `camB target=${camBTarget}, ожидалось 24`);
+  // Относительное выравнивание (устойчиво к выбору base компоненты):
+  // K(src) = target - inPoint = base + off(src). Разности K = разности офсетов.
+  const Kref = byNode.r1.targetSec - 0;   // ref in=0
+  const KcamA = byNode.a1.targetSec - 2;  // camA in=2
+  const KcamB = byNode.b1.targetSec - 0;  // camB in=0
+  assert.ok(Math.abs((KcamA - Kref) - 10) < dt * 2, `off camA=${KcamA - Kref}, ожидалось 10`);
+  assert.ok(Math.abs((KcamB - Kref) - 24) < dt * 2, `off camB=${KcamB - Kref}, ожидалось 24`);
   assert.equal(byNode.a1.status, 'sync');
   assert.equal(byNode.b1.status, 'sync');
-  assert.ok(Math.abs(byNode.r1.shiftSec) < dt * 2, 'опорный клип не двигается');
+  // все три источника — одна компонента
+  assert.equal(byNode.r1.component, byNode.a1.component);
+  assert.equal(byNode.a1.component, byNode.b1.component);
 });

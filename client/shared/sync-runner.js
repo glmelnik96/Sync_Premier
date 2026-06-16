@@ -144,39 +144,62 @@
         }
       }
 
-      /* 3. граф офсетов; корень = самый длинный источник (детерминированно). */
+      /* 3. компоненты связности (комнаты/сессии без общего звука — раздельно).
+         Корень компоненты = самый длинный источник в ней. */
       var paths = srcEnvs.map(function (s) { return s.path; });
-      var longest = null;
-      for (var c = 0; c < srcEnvs.length; c++) if (!longest || srcEnvs[c].env.length > byPath[longest].env.length) longest = srcEnvs[c].path;
-      var graph = SG.resolveSourceOffsets(paths, pairs, { minCorr: minCorr, preferredRoot: opt.preferredRoot || longest });
-
-      /* 4. base: сдвигаем всю синхро-раскладку так, чтобы самый ранний клип лёг в 0
-         (сохраняем относительное выравнивание, избегаем отрицательных позиций). */
-      var clips = snapshot.clips || [];
-      var minRaw = null;
-      var i2;
-      for (i2 = 0; i2 < clips.length; i2++) {
-        var cm = clips[i2];
-        if (cm.trackType !== 'audio' || !cm.mediaPath || !graph.offsets.hasOwnProperty(cm.mediaPath)) continue;
-        var raw = cm.inPointSec + graph.offsets[cm.mediaPath];  /* позиция начала клипа в часах корня */
-        if (minRaw === null || raw < minRaw) minRaw = raw;
+      var comps = SG.resolveComponents(paths, pairs, { minCorr: minCorr,
+        preferredRootOf: function (members) {
+          var lng = null;
+          for (var mm = 0; mm < members.length; mm++) if (!lng || byPath[members[mm]].env.length > byPath[lng].env.length) lng = members[mm];
+          return lng;
+        } });
+      /* source → {off, conf, compId} */
+      var srcInfo = {};
+      for (var ci = 0; ci < comps.length; ci++) {
+        var cp = comps[ci];
+        for (var sp in cp.offsets) if (cp.offsets.hasOwnProperty(sp)) {
+          srcInfo[sp] = { off: cp.offsets[sp], conf: cp.confidence[sp] != null ? cp.confidence[sp] : 0, compId: ci };
+        }
       }
-      var base = (minRaw === null) ? 0 : -minRaw;
+
+      var clips = snapshot.clips || [];
+
+      /* 4. base каждой компоненты = медиана (startSec - inPoint - off) по её клипам:
+         компонента остаётся около текущего места, выравнивается только внутри себя
+         (без ложного межгруппового сдвига через слабый мост). */
+      var rawByComp = {};
+      var k2;
+      for (k2 = 0; k2 < clips.length; k2++) {
+        var cl = clips[k2];
+        if (cl.trackType !== 'audio' || !cl.mediaPath || !srcInfo[cl.mediaPath]) continue;
+        var info = srcInfo[cl.mediaPath];
+        var val = cl.startSec - cl.inPointSec - info.off;
+        if (!rawByComp[info.compId]) rawByComp[info.compId] = [];
+        rawByComp[info.compId].push(val);
+      }
+      var baseByComp = {};
+      for (var cid in rawByComp) {
+        if (!rawByComp.hasOwnProperty(cid)) continue;
+        var arr = rawByComp[cid].slice().sort(function (a, b) { return a - b; });
+        baseByComp[cid] = arr[Math.floor(arr.length / 2)]; /* медиана */
+      }
 
       /* 5. цель каждого аудиоклипа. */
       var rows = [];
       for (var j = 0; j < clips.length; j++) {
         var c2 = clips[j];
         if (c2.trackType !== 'audio' || !c2.mediaPath) continue;
-        if (graph.offsets.hasOwnProperty(c2.mediaPath)) {
-          var target = base + c2.inPointSec + graph.offsets[c2.mediaPath];
+        if (srcInfo[c2.mediaPath]) {
+          var inf = srcInfo[c2.mediaPath];
+          var base = baseByComp[inf.compId] || 0;
+          var target = base + c2.inPointSec + inf.off;
+          if (target < 0) target = 0;
           rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex,
             shiftSec: target - c2.startSec, targetSec: target,
-            confidence: graph.confidence[c2.mediaPath] != null ? graph.confidence[c2.mediaPath] : 0,
-            slope: 0, status: 'sync' });
+            confidence: inf.conf, component: inf.compId, slope: 0, status: 'sync' });
         } else {
           rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex,
-            shiftSec: 0, targetSec: c2.startSec, confidence: 0, slope: 0, status: 'low-confidence' });
+            shiftSec: 0, targetSec: c2.startSec, confidence: 0, component: -1, slope: 0, status: 'low-confidence' });
         }
       }
       return rows;

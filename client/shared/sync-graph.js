@@ -99,9 +99,54 @@
     return { root: root, offsets: offsets, confidence: confidence, unreachable: unreachable };
   }
 
+  /**
+   * Разбить источники на компоненты связности (по рёбрам corr≥minCorr) и в каждой
+   * посчитать офсеты (max-spanning-tree от самого связного узла). Несвязанные группы
+   * (напр. съёмка в разных помещениях без общего звука) остаются раздельными.
+   * Возвращает [{sources:[...], root, offsets:{id→off}, confidence:{id→c}}].
+   */
+  function resolveComponents(sources, pairs, opt) {
+    opt = opt || {};
+    var minCorr = (typeof opt.minCorr === 'number') ? opt.minCorr : 0.4;
+    var strong = [];
+    for (var i = 0; i < pairs.length; i++) if (pairs[i].corr >= minCorr) strong.push(pairs[i]);
+
+    /* union-find по сильным рёбрам */
+    var parent = {};
+    for (var s = 0; s < sources.length; s++) parent[sources[s]] = sources[s];
+    function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+    function uni(a, b) { parent[find(a)] = find(b); }
+    for (var e = 0; e < strong.length; e++) uni(strong[e].a, strong[e].b);
+
+    /* группировка источников по корню union-find */
+    var groups = {};
+    for (var g = 0; g < sources.length; g++) {
+      var rt = find(sources[g]);
+      if (!groups[rt]) groups[rt] = [];
+      groups[rt].push(sources[g]);
+    }
+
+    /* для каждой компоненты — свой подграф рёбер и resolveSourceOffsets */
+    var comps = [];
+    for (var key in groups) {
+      if (!groups.hasOwnProperty(key)) continue;
+      var members = groups[key];
+      var memberSet = {};
+      for (var m = 0; m < members.length; m++) memberSet[members[m]] = 1;
+      var subPairs = [];
+      for (var p = 0; p < strong.length; p++) if (memberSet[strong[p].a] && memberSet[strong[p].b]) subPairs.push(strong[p]);
+      var res = resolveSourceOffsets(members, subPairs, { minCorr: minCorr, preferredRoot: opt.preferredRootOf ? opt.preferredRootOf(members) : null });
+      comps.push({ sources: members, root: res.root, offsets: res.offsets, confidence: res.confidence });
+    }
+    /* крупнейшие компоненты первыми */
+    comps.sort(function (x, y) { return y.sources.length - x.sources.length; });
+    return comps;
+  }
+
   global.SyncGraph = {
     pickAnchorTrack: pickAnchorTrack,
     resolveClipOffset: resolveClipOffset,
-    resolveSourceOffsets: resolveSourceOffsets
+    resolveSourceOffsets: resolveSourceOffsets,
+    resolveComponents: resolveComponents
   };
 })(typeof window !== 'undefined' ? window : this);

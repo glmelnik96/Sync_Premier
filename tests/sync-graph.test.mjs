@@ -31,6 +31,29 @@ test('resolveClipOffset: дрейф → status drift со slope', () => {
   assert.ok(Math.abs(r.slope - (-0.004)) < 1e-9);
 });
 
+test('resolveComponents: разделяет несвязанные группы (две комнаты) и считает офсеты в каждой', () => {
+  const SG = loadSyncGraph();
+  const sources = ['camA', 'camB', 'rec1', 'camX', 'camY', 'rec2'];
+  // комната 1: camA,camB,rec1 связаны; комната 2: camX,camY,rec2 связаны; между ними рёбер нет
+  const pairs = [
+    { a: 'camA', b: 'camB', offset: 4, corr: 0.85 },
+    { a: 'camA', b: 'rec1', offset: 10, corr: 0.6 },
+    { a: 'camX', b: 'camY', offset: 7, corr: 0.8 },
+    { a: 'camX', b: 'rec2', offset: 3, corr: 0.55 },
+    { a: 'camA', b: 'camX', offset: 999, corr: 0.2 } // слабое межкомнатное — игнор
+  ];
+  const comps = SG.resolveComponents(sources, pairs, { minCorr: 0.4 });
+  assert.equal(comps.length, 2, 'должно быть две компоненты');
+  // найти компоненту с camA
+  const c1 = comps.filter((c) => c.offsets.hasOwnProperty('camA'))[0];
+  const c2 = comps.filter((c) => c.offsets.hasOwnProperty('camX'))[0];
+  assert.ok(c1 && c2 && c1 !== c2, 'camA и camX в разных компонентах');
+  assert.ok(c1.offsets.hasOwnProperty('camB') && c1.offsets.hasOwnProperty('rec1'));
+  assert.ok(!c1.offsets.hasOwnProperty('camX'), 'комнаты не смешиваются');
+  // согласованность внутри комнаты 1: time[camA]=time[camB]+4 → oB-oA=4
+  assert.ok(Math.abs((c1.offsets.camB - c1.offsets.camA) - 4) < 1e-9, `camB-camA=${c1.offsets.camB - c1.offsets.camA}`);
+});
+
 test('resolveSourceOffsets: BFS по графу даёт согласованные офсеты к корню', () => {
   const SG = loadSyncGraph();
   // отношение ребра: time[a] = time[b] + offset
