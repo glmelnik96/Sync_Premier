@@ -59,23 +59,34 @@
       backupSeqId = b.backupId;
       revertBtn.disabled = !backupSeqId;
       var toMove = lastRows.filter(function (r) { return r.status === 'sync' || r.status === 'drift'; });
+      var toEnd = lastRows.filter(function (r) { return r.status === 'unsynced'; });
       var i = 0;
       /* СИНХРОНИЗАЦИЯ: только сдвиг клипов (вместе со связанным A/V).
          Ripple-закрытие пауз НЕ применяем — паузы между клипами в синхро-раскладке
          осмысленны (камера не писала), уплотнение разрушило бы выравнивание. */
-      (function next() {
-        if (i >= toMove.length) {
-          /* Переоткрыть секвенцию: снимает косметические бейджи рассинхрона,
-             которые Premiere оставляет после скриптовых move(). */
-          setStatus('Синхронизировано: ' + toMove.length + ' клипов. Обновление…');
-          window.PremiereBridge.refreshActiveSequence(function () {
-            setStatus('Синхронизировано: ' + toMove.length + ' клипов');
+      function finishUnsynced() {
+        /* Несвязанные клипы: сдвинуть в конец + красный label (нечего синхронизировать). */
+        var j = 0;
+        (function nextU() {
+          if (j >= toEnd.length) {
+            setStatus('Синхронизировано: ' + toMove.length + ', без связи (в конец): ' + toEnd.length + '. Обновление…');
+            window.PremiereBridge.refreshActiveSequence(function () {
+              setStatus('Готово. Синхронизировано: ' + toMove.length + ', без связи: ' + toEnd.length);
+            });
+            return;
+          }
+          var u = toEnd[j++];
+          window.PremiereBridge.moveClipTo(u.nodeId, Math.round(u.targetSec * TICKS_PER_SECOND), function () {
+            window.PremiereBridge.setClipLabel(u.nodeId, 6, function () {
+              setStatus('В конец ' + j + '/' + toEnd.length); nextU();
+            });
           });
-          return;
-        }
+        })();
+      }
+      (function next() {
+        if (i >= toMove.length) { finishUnsynced(); return; }
         var r = toMove[i++];
-        var deltaTicks = Math.round(r.shiftSec * TICKS_PER_SECOND);
-        window.PremiereBridge.moveClip(r.nodeId, deltaTicks, function (e) {
+        window.PremiereBridge.moveClipTo(r.nodeId, Math.round(r.targetSec * TICKS_PER_SECOND), function (e) {
           if (e) { setStatus('Ошибка moveClip: ' + e.message); return; }
           setStatus('Сдвинуто ' + i + '/' + toMove.length); next();
         });

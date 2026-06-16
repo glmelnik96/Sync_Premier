@@ -288,13 +288,55 @@
         var lr2 = locate(repTrack(bigU).env, repTrack(smlU).env, dt); /* posSec = старт smlU внутри bigU */
         unitPairs.push({ a: bigU.key, b: smlU.key, offset: lr2.posSec, corr: unitCorr(ra, rb) }); /* time[big]=time[sml]+offset */
       }
-      var unitKeys = units.map(function (u) { return u.key; });
-      var lenByKey = {}; for (var lk = 0; lk < units.length; lk++) lenByKey[units[lk].key] = units[lk].maxLen;
-      var refComps = SG.resolveComponents(unitKeys, unitPairs, { minCorr: refGate,
-        preferredRootOf: function (members) { var best = members[0]; for (var mi = 1; mi < members.length; mi++) if (lenByKey[members[mi]] > lenByKey[best]) best = members[mi]; return best; } });
-      var refInfo = {}; /* unitKey → {clockId(компонента/комната), off(офсет к корню комнаты)} */
-      for (var rc = 0; rc < refComps.length; rc++) for (var rp in refComps[rc].offsets) if (refComps[rc].offsets.hasOwnProperty(rp)) {
-        refInfo[rp] = { clockId: rc, off: refComps[rc].offsets[rp] };
+      /* 3b. КОМНАТЫ через НАДЁЖНЫЕ связи (модель «А слышит Б, Б слышит рекордер»):
+         • СИЛЬНОЕ ребро (corr≥strongGate) объединяет напрямую и ТРАНЗИТИВНО — чёткое
+           «слышит»; цепочка сильных рёбер связывает A-B-C, даже если A не слышит C.
+         • СЛАБОЕ ребро в одиночку (weakGate..strongGate) НЕ объединяет: может быть
+           случайным совпадением (ложный пик ~0.5, как roaming-камера к чужой комнате).
+           Объединяет только КОРРОБОРАЦИЯ — ≥2 слабых ребра между группами с СОГЛАСОВАННЫМ
+           сдвигом (так лав-рекордер, слышимый несколькими камерами, цепляется к ним).
+         Единицы без надёжной связи остаются одиночками → их клипы уйдут в конец + label. */
+      function medOf(a) { var b = a.slice().sort(function (p, q) { return p - q; }); return b[Math.floor(b.length / 2)]; }
+      var strongGate = 0.7, weakGate = refGate, mergeTol = 3.0;
+      var edgesByCorr = unitPairs.filter(function (e) { return e.corr >= weakGate; }).sort(function (a, b) { return b.corr - a.corr; });
+      var parent = {}, off = {}; /* root_time = node_time + offToRoot(node) */
+      for (var ui = 0; ui < units.length; ui++) { parent[units[ui].key] = units[ui].key; off[units[ui].key] = 0; }
+      function find(k) { while (parent[k] !== k) k = parent[k]; return k; }
+      function offToRoot(k) { var s = 0; while (parent[k] !== k) { s += off[k]; k = parent[k]; } return s; }
+      function uniteRoots(rA, rB, d) { parent[rB] = rA; off[rB] = d; } /* rootA_time = rootB_time + d */
+      /* сильные рёбра → прямое транзитивное объединение */
+      for (var se = 0; se < edgesByCorr.length; se++) {
+        var ed = edgesByCorr[se]; if (ed.corr < strongGate) continue;
+        var raR = find(ed.a), rbR = find(ed.b); if (raR === rbR) continue;
+        uniteRoots(raR, rbR, ed.offset + offToRoot(ed.a) - offToRoot(ed.b)); /* rootA = rootB + d */
+      }
+      /* слабые рёбра → объединение только при корроборации ≥2 согласованных оценок сдвига */
+      var changedRooms = true;
+      while (changedRooms) {
+        changedRooms = false;
+        var byPair = {};
+        for (var we = 0; we < edgesByCorr.length; we++) {
+          var e2 = edgesByCorr[we]; var rA = find(e2.a), rB = find(e2.b); if (rA === rB) continue;
+          var dd = e2.offset + offToRoot(e2.a) - offToRoot(e2.b); /* rootA(e2.a) = rootB(e2.b) + dd */
+          var keyP = rA + '\u0001' + rB, flip = false, alt = rB + '\u0001' + rA;
+          if (byPair[alt]) { keyP = alt; flip = true; } else if (!byPair[keyP]) byPair[keyP] = { a: rA, b: rB, ds: [] };
+          byPair[keyP].ds.push(flip ? -dd : dd);
+        }
+        for (var pk in byPair) { if (!byPair.hasOwnProperty(pk)) continue;
+          var pr = byPair[pk]; if (pr.ds.length < 2) continue;
+          var mD = medOf(pr.ds), agree = 0;
+          for (var di = 0; di < pr.ds.length; di++) if (Math.abs(pr.ds[di] - mD) < mergeTol) agree++;
+          if (agree >= 2) { var rrA = find(pr.a), rrB = find(pr.b); if (rrA !== rrB) { uniteRoots(rrA, rrB, mD); changedRooms = true; break; } }
+        }
+      }
+      /* комнаты по корням union-find; connected=true если в комнате >1 единицы */
+      var roomMembers = {};
+      for (var uu = 0; uu < units.length; uu++) { var rt = find(units[uu].key); if (!roomMembers[rt]) roomMembers[rt] = []; roomMembers[rt].push(units[uu].key); }
+      var refInfo = {}, rid = 0; /* unitKey → {clockId, off(к корню комнаты), connected} */
+      for (var rmk in roomMembers) { if (!roomMembers.hasOwnProperty(rmk)) continue;
+        var mem = roomMembers[rmk], conn = mem.length > 1;
+        for (var mk = 0; mk < mem.length; mk++) refInfo[mem[mk]] = { clockId: rid, off: offToRoot(mem[mk]), connected: conn };
+        rid++;
       }
 
       /* 4. каждый клип → лучшая по корреляции единица → позиция в часах её комнаты */
@@ -312,49 +354,51 @@
       }).then(function (matched) {
         function med(a) { var b = a.slice().sort(function (p, q) { return p - q; }); return b[Math.floor(b.length / 2)]; }
         /* clockPos = позиция клипа в его единице + офсет единицы к корню комнаты.
-           Комнаты (clockId) уже разрешены единым графом единиц (max-spanning-tree),
-           поэтому отдельное слияние «часов» больше не нужно. */
+           connected = клип привязан к НАДЁЖНОЙ (многоузловой) комнате. */
         for (var m0 = 0; m0 < matched.length; m0++) {
-          var mm0 = matched[m0];
-          mm0.valid = mm0.best && mm0.best.corr >= clipGate && refInfo[mm0.best.unitKey];
-          if (mm0.valid) { mm0.clockId = refInfo[mm0.best.unitKey].clockId; mm0.clockPos = mm0.best.posSec + refInfo[mm0.best.unitKey].off; }
+          var mm0 = matched[m0], ri = mm0.best ? refInfo[mm0.best.unitKey] : null;
+          mm0.connected = !!(mm0.best && mm0.best.corr >= clipGate && ri && ri.connected);
+          if (mm0.best && ri) { mm0.clockId = ri.clockId; mm0.clockPos = mm0.best.posSec + ri.off; }
         }
-
-        /* база каждой комнаты: медиана(startSec - clockPos) */
+        /* база каждой СВЯЗАННОЙ комнаты: медиана(startSec - clockPos) */
         var rawByClock = {};
-        for (var m2 = 0; m2 < matched.length; m2++) {
-          var mm2 = matched[m2]; if (!mm2.valid) continue;
-          if (!rawByClock[mm2.clockId]) rawByClock[mm2.clockId] = [];
-          rawByClock[mm2.clockId].push(mm2.clip.startSec - mm2.clockPos);
-        }
+        for (var m2 = 0; m2 < matched.length; m2++) { var mm2 = matched[m2]; if (!mm2.connected) continue;
+          if (!rawByClock[mm2.clockId]) rawByClock[mm2.clockId] = []; rawByClock[mm2.clockId].push(mm2.clip.startSec - mm2.clockPos); }
         var baseByClock = {};
         for (var su in rawByClock) if (rawByClock.hasOwnProperty(su)) baseByClock[su] = med(rawByClock[su]);
-
-        /* предварительные target (base комнаты + позиция в часах комнаты) */
-        var globalMin = null;
-        for (var n0 = 0; n0 < matched.length; n0++) {
-          var v0 = matched[n0]; if (!v0.valid) continue;
-          v0.target = (baseByClock[v0.clockId] || 0) + v0.clockPos;
-          if (globalMin === null || v0.target < globalMin) globalMin = v0.target;
+        /* позиция клипа внутри его комнаты (нормируем к началу комнаты = 0) */
+        var minByClock = {};
+        for (var m3 = 0; m3 < matched.length; m3++) { var v3 = matched[m3]; if (!v3.connected) continue;
+          v3.roomTarget = (baseByClock[v3.clockId] || 0) + v3.clockPos;
+          if (minByClock[v3.clockId] == null || v3.roomTarget < minByClock[v3.clockId]) minByClock[v3.clockId] = v3.roomTarget; }
+        /* раскладываем КОМНАТЫ последовательно: комната 0 с 0, следующая — после конца пред. */
+        var clockIds = []; for (var ck in minByClock) if (minByClock.hasOwnProperty(ck)) clockIds.push(+ck);
+        clockIds.sort(function (a, b) { return a - b; });
+        var roomStart = {}, cursor = 0, GAP = 2;
+        for (var ci = 0; ci < clockIds.length; ci++) {
+          var cid = clockIds[ci]; roomStart[cid] = cursor; var roomEnd = 0;
+          for (var m4 = 0; m4 < matched.length; m4++) { var v4 = matched[m4]; if (!v4.connected || v4.clockId != cid) continue;
+            var le = (v4.roomTarget - minByClock[cid]) + (v4.clip.endSec - v4.clip.startSec); if (le > roomEnd) roomEnd = le; }
+          cursor += roomEnd + GAP;
         }
-        /* ГЛОБАЛЬНАЯ НОРМАЛИЗАЦИЯ: самый ранний клип всех комнат → 0 (как эталон Draft_2),
-           относительная раскладка внутри/между комнатами сохраняется. Иначе медиана-якорь
-           комнаты наследует исходный разброс таймлайна (контент уезжает на часы вправо). */
-        var shift0 = globalMin === null ? 0 : globalMin;
+        /* несвязанные клипы — последовательно В КОНЕЦ, статус 'unsynced' (красный label) */
+        var unsynced = matched.filter(function (m) { return !m.connected; }).sort(function (a, b) { return a.clip.startSec - b.clip.startSec; });
+        var ucur = cursor;
+        for (var us = 0; us < unsynced.length; us++) { unsynced[us].endTarget = ucur; ucur += (unsynced[us].clip.endSec - unsynced[us].clip.startSec) + GAP; }
 
         var rows = [];
         for (var n = 0; n < matched.length; n++) {
           var x2 = matched[n], c2 = x2.clip;
-          if (x2.valid) {
-            var target = x2.target - shift0;
+          if (x2.connected) {
+            var target = roomStart[x2.clockId] + (x2.roomTarget - minByClock[x2.clockId]);
             if (target < 0) target = 0;
-            rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex,
-              shiftSec: target - c2.startSec, targetSec: target, confidence: x2.best.corr,
+            rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex, mediaPath: c2.mediaPath,
+              shiftSec: target - c2.startSec, targetSec: target, confidence: x2.best ? x2.best.corr : 0,
               component: x2.clockId, slope: 0, status: 'sync' });
           } else {
-            rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex,
-              shiftSec: 0, targetSec: c2.startSec, confidence: x2.best ? x2.best.corr : 0,
-              component: -1, slope: 0, status: 'low-confidence' });
+            rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex, mediaPath: c2.mediaPath,
+              shiftSec: x2.endTarget - c2.startSec, targetSec: x2.endTarget, confidence: x2.best ? x2.best.corr : 0,
+              component: -1, slope: 0, status: 'unsynced' });
           }
         }
         return rows;

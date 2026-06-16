@@ -155,16 +155,23 @@ $._SYNC_._setClipPosition = function (clip, newStartTicks, durTicks) {
   }
 };
 
-/** Сдвиг клипа И ВСЕХ связанных A/V-элементов на одну deltaTicks (сохраняет линковку). */
+/** Позиционирование клипа И ВСЕХ связанных A/V-элементов в АБСОЛЮТНУЮ позицию targetTicks
+    (для первичного клипа). Связанные двигаются на ту же дельту → линковка сохраняется.
+    Абсолютная цель делает операцию ИДЕМПОТЕНТНОЙ: повторный вызов на уже-перемещённом
+    клипе даёт дельту 0 (важно, когда один источник присутствует несколькими связанными
+    копиями на разных дорожках — каждая строка двигает группу, но повтор уже no-op).
+    Поддерживается и устаревший {deltaTicks} для обратной совместимости. */
 $._SYNC_.moveClip = function (paramsJson) {
   try {
-    var p = JSON.parse(paramsJson);            /* {nodeId, deltaTicks} */
+    var p = JSON.parse(paramsJson);            /* {nodeId, targetTicks} | {nodeId, deltaTicks} */
     if (!app.project || !app.project.activeSequence) return JSON.stringify({ ok: false, error: 'Нет активной секвенции' });
     var seq = app.project.activeSequence;
     var found = $._SYNC_._findClipByNodeId(seq, p.nodeId);
     if (!found) return JSON.stringify({ ok: false, error: 'Клип не найден: ' + p.nodeId });
     var clip = found.clip;
-    var delta = parseFloat(p.deltaTicks);
+    var delta = (p.targetTicks != null)
+      ? (parseFloat(p.targetTicks) - parseFloat(clip.start.ticks))  /* абсолютная цель → дельта от текущей позиции */
+      : parseFloat(p.deltaTicks);
     /* Если delta отрицательная и какой-либо из связанных элементов уехал бы < 0 —
        ограничиваем delta так, чтобы самый левый элемент встал ровно в 0 (сохраняем
        относительную линковку между видео и аудио). */
@@ -198,6 +205,24 @@ $._SYNC_.moveClip = function (paramsJson) {
       moved++;
     }
     return JSON.stringify({ ok: true, nodeId: String(p.nodeId), movedItems: moved, appliedDeltaTicks: String(Math.round(delta)) });
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
+  }
+};
+
+/** Цветовой label клипа (через projectItem источника) — пометить несинхронизированные.
+    colorIndex: индекс палитры Premiere (по умолчанию красный/Rose). */
+$._SYNC_.setClipLabel = function (paramsJson) {
+  try {
+    var p = JSON.parse(paramsJson);            /* {nodeId, colorIndex} */
+    if (!app.project || !app.project.activeSequence) return JSON.stringify({ ok: false, error: 'Нет активной секвенции' });
+    var found = $._SYNC_._findClipByNodeId(app.project.activeSequence, p.nodeId);
+    if (!found) return JSON.stringify({ ok: false, error: 'Клип не найден: ' + p.nodeId });
+    var idx = (typeof p.colorIndex === 'number') ? p.colorIndex : 6; /* 6 = Rose (красный) */
+    var pi = found.clip.projectItem;
+    if (!pi || typeof pi.setColorLabel !== 'function') return JSON.stringify({ ok: false, error: 'setColorLabel недоступен' });
+    pi.setColorLabel(idx);
+    return JSON.stringify({ ok: true, nodeId: String(p.nodeId), colorIndex: idx });
   } catch (e) {
     return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
   }

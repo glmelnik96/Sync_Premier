@@ -97,6 +97,11 @@
       this.evalJson('$._SYNC_.getClipMediaPath("' + s + '")', cb);
     },
 
+    moveClipTo: function (nodeId, targetTicks, cb) {
+      var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, targetTicks: targetTicks }));
+      this.evalJson('$._SYNC_.moveClip("' + json + '")', cb);
+    },
+
     moveClip: function (nodeId, deltaTicks, cb) {
       var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, deltaTicks: deltaTicks }));
       this.evalJson('$._SYNC_.moveClip("' + json + '")', cb);
@@ -119,6 +124,11 @@
       this.evalJson('$._SYNC_.activateSequenceById("' + s + '")', cb);
     },
 
-    refreshActiveSequence: function (cb) { this.evalJson('$._SYNC_.refreshActiveSequence()', cb); }
+    refreshActiveSequence: function (cb) { this.evalJson('$._SYNC_.refreshActiveSequence()', cb); },
+
+    setClipLabel: function (nodeId, colorIndex, cb) {
+      var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, colorIndex: colorIndex }));
+      this.evalJson('$._SYNC_.setClipLabel("' + json + '")', cb);
+    }
   };
 })(window);
