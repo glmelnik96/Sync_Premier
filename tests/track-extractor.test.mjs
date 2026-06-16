@@ -13,7 +13,8 @@ const SNAP = {
 test('clipsForTrack фильтрует по типу и индексу, сортирует по startSec', () => {
   const TE = loadTrackExtractor();
   const r = TE.clipsForTrack(SNAP, 'audio', 0);
-  assert.deepEqual(r.map(c => c.nodeId), ['a', 'b']);
+  // r — массив из vm-контекста; сравниваем значения без привязки к прототипу realm
+  assert.equal(Array.from(r, c => c.nodeId).join(','), 'a,b');
 });
 
 test('mediaToSequenceSec: media-время → sequence-время', () => {
