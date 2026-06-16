@@ -91,11 +91,82 @@
     return corr >= t;
   }
 
+  /* Итеративный radix-2 FFT (re/im на месте). inverse: знак + деление на n. */
+  function fft(re, im, inverse) {
+    var n = re.length, i, j, bit, len, k;
+    for (i = 1, j = 0; i < n; i++) {
+      for (bit = n >> 1; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) { var tr = re[i]; re[i] = re[j]; re[j] = tr; var ti = im[i]; im[i] = im[j]; im[j] = ti; }
+    }
+    for (len = 2; len <= n; len <<= 1) {
+      var ang = (inverse ? 2 : -2) * Math.PI / len;
+      var wr = Math.cos(ang), wi = Math.sin(ang);
+      for (i = 0; i < n; i += len) {
+        var cwr = 1, cwi = 0;
+        for (k = 0; k < len / 2; k++) {
+          var ur = re[i + k], ui = im[i + k];
+          var vr = re[i + k + len / 2] * cwr - im[i + k + len / 2] * cwi;
+          var vi = re[i + k + len / 2] * cwi + im[i + k + len / 2] * cwr;
+          re[i + k] = ur + vr; im[i + k] = ui + vi;
+          re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+          var ncwr = cwr * wr - cwi * wi; cwi = cwr * wi + cwi * wr; cwr = ncwr;
+        }
+      }
+    }
+    if (inverse) for (i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+  }
+
+  /* Сырая скользящая взаимная корреляция corr[lag]=sum_i s[lag+i]*t[i] через FFT. */
+  function rawXCorrFFT(s, t) {
+    var need = s.length + t.length, L = 1;
+    while (L < need) L <<= 1;
+    var sr = new Float64Array(L), si = new Float64Array(L), tr = new Float64Array(L), ti = new Float64Array(L);
+    var i;
+    for (i = 0; i < s.length; i++) sr[i] = s[i];
+    for (i = 0; i < t.length; i++) tr[i] = t[i];
+    fft(sr, si, false); fft(tr, ti, false);
+    var pr = new Float64Array(L), pi = new Float64Array(L);
+    for (i = 0; i < L; i++) { pr[i] = sr[i] * tr[i] + si[i] * ti[i]; pi[i] = si[i] * tr[i] - sr[i] * ti[i]; }
+    fft(pr, pi, true);
+    return pr;
+  }
+
+  /**
+   * Глобальный поиск позиции шаблона t внутри сигнала s через FFT + пооконную
+   * нормализацию (NCC, аналог matchTemplate). O(N log N). Возвращает {lag, corr∈[-1,1]}.
+   * lag — индекс в s, где начинается лучшее совпадение t.
+   */
+  function globalNccPeak(s, t) {
+    var M = t.length, N = s.length, i;
+    if (M > N || M === 0) return { lag: 0, corr: -1 };
+    var raw = rawXCorrFFT(s, t);
+    var ps = new Float64Array(N + 1), ps2 = new Float64Array(N + 1);
+    for (i = 0; i < N; i++) { ps[i + 1] = ps[i] + s[i]; ps2[i + 1] = ps2[i] + s[i] * s[i]; }
+    var meanT = 0; for (i = 0; i < M; i++) meanT += t[i]; meanT /= M;
+    var varT = 0; for (i = 0; i < M; i++) varT += (t[i] - meanT) * (t[i] - meanT);
+    var stdT = Math.sqrt(varT);
+    if (stdT < 1e-9) return { lag: 0, corr: 0 }; /* шаблон-тишина */
+    var best = { lag: 0, corr: -2 };
+    for (var lag = 0; lag + M <= N; lag++) {
+      var sumS = ps[lag + M] - ps[lag];
+      var sumS2 = ps2[lag + M] - ps2[lag];
+      var meanS = sumS / M;
+      var varS = sumS2 - M * meanS * meanS;
+      var stdS = Math.sqrt(varS > 0 ? varS : 1e-12);
+      var ncc = (raw[lag] - M * meanS * meanT) / ((stdS * stdT) || 1e-12);
+      if (ncc > best.corr) best = { lag: lag, corr: ncc };
+    }
+    return best;
+  }
+
   global.SyncCore = {
     zeroMean: zeroMean,
     norm: norm,
     normXCorr: normXCorr,
     detectDrift: detectDrift,
-    confidenceOk: confidenceOk
+    confidenceOk: confidenceOk,
+    fft: fft,
+    globalNccPeak: globalNccPeak
   };
 })(typeof window !== 'undefined' ? window : this);

@@ -91,3 +91,32 @@ test('detectDrift: короткий ровный клип → slope≈0, hasDrif
   assert.ok(Math.abs(r.slope) < 1e-4, `slope=${r.slope}`);
   assert.equal(r.hasDrift, false);
 });
+
+test('globalNccPeak находит позицию шаблона в длинном сигнале (FFT-NCC)', () => {
+  const SC = loadSyncCore();
+  // signal длиной 8000, распознаваемая «речь» из гауссовых всплесков
+  const N = 8000;
+  const signal = new Float64Array(N);
+  let seed = 99;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const peaks = [];
+  for (let p = 0; p < 120; p++) peaks.push({ pos: rnd() * N, amp: 0.3 + rnd() });
+  for (let i = 0; i < N; i++) { let v = 0; for (const pk of peaks) { const d = i - pk.pos; v += pk.amp * Math.exp(-(d * d) / 150); } signal[i] = v; }
+  // template = участок сигнала со known-позиции 3000, длиной 1500, + шум и усиление (другой «микрофон»)
+  const truePos = 3000, M = 1500;
+  const template = new Float64Array(M);
+  for (let k = 0; k < M; k++) template[k] = signal[truePos + k] * 0.7 + (rnd() - 0.5) * 0.15;
+  const r = SC.globalNccPeak(signal, template);
+  assert.ok(Math.abs(r.lag - truePos) <= 1, `lag=${r.lag}, ожидалось ${truePos}`);
+  assert.ok(r.corr > 0.7, `corr=${r.corr}`);
+});
+
+test('globalNccPeak: тишина-шаблон → низкий corr (нет ложного матча)', () => {
+  const SC = loadSyncCore();
+  const N = 4096;
+  const signal = new Float64Array(N);
+  for (let i = 0; i < N; i++) signal[i] = Math.abs(Math.sin(i / 7)) + Math.abs(Math.sin(i / 23));
+  const template = new Float64Array(800); // нули = тишина
+  const r = SC.globalNccPeak(signal, template);
+  assert.ok(r.corr < 0.3, `corr=${r.corr}`);
+});
