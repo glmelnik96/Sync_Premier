@@ -28,7 +28,7 @@
 | `client/lib/csinterface.js` | копия генерик-библиотеки CEP из родителя |
 | `host/premiere-sync.jsx` | тонкий host: snapshot, mediaPath, moveClip, ripple, speed, backup, activate |
 | `client/panel/index.html` + `panel.js` + `styles.css` | UI: анализ, таблица, вейвформ, Apply, Revert |
-| `CSXS/manifest.xml` + `CSXS/.debug` | манифест расширения + debug-порт 8100 |
+| `CSXS/manifest.xml` + `.debug` (в корне расширения, НЕ в CSXS/) | манифест расширения + debug-порт 8100 |
 | `tools/cep-debug.mjs` | копия CDP-драйвера из родителя (порт через env) |
 | `tests/load-*.mjs` + `tests/*.test.mjs` | vm-loader + unit-тесты ядра |
 
@@ -856,7 +856,7 @@ git commit -m "feat(sync-graph): выбор опоры и по-клипное р
 
 **Files:**
 - Create: `CSXS/manifest.xml`
-- Create: `CSXS/.debug`
+- Create: `.debug` (в корне расширения, НЕ в CSXS/)
 - Create: `client/lib/csinterface.js` (копия из родителя)
 - Create: `tools/cep-debug.mjs` (копия из родителя)
 - Create: `client/panel/index.html`
@@ -911,7 +911,7 @@ cp "C:/Users/Глеб/Documents/Extensions-LLM-Chat_Pr/tools/cep-debug.mjs" tool
 </ExtensionManifest>
 ```
 
-- [ ] **Step 3: Создать `CSXS/.debug` (порт 8100)**
+- [ ] **Step 3: Создать `.debug` (в корне расширения, НЕ в CSXS/) (порт 8100)**
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>

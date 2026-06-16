@@ -66,7 +66,7 @@
   `com.gleb.aisync.panel`, меню **«ИИ: синхронизация»**, Host `PPRO [24.0,99.9]`,
   RequiredRuntime CSXS 12.0, CEFCommandLine: `--mixed-context --enable-nodejs
   --disable-application-cache`.
-- `CSXS/.debug` — порт отладки **8100** (родитель занимает 8098, конфликта нет).
+- `.debug` (в корне расширения, НЕ в CSXS/) — порт отладки **8100** (родитель занимает 8098, конфликта нет).
 - `client/lib/csinterface.js` — копия из родителя (генерик CEP-библиотека).
 - `tools/cep-debug.mjs` — копия из родителя, порт через `CEP_DEBUG_PORT` (default 8100).
 - Установка: симлинк репозитория в
