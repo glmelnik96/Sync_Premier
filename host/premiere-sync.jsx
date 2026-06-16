@@ -51,8 +51,11 @@ $._SYNC_.getTimelineSnapshot = function () {
 
     var playheadSec = 0;
     try { playheadSec = seq.getPlayerPosition().seconds; } catch (ePH) {}
+    /* seq.end.seconds на части секвенций бросает/возвращает 0 — длительность берём
+       как максимум по концам клипов (см. live-валидацию 2026-06-16), с фолбэком. */
     var seqOutSec = 0;
-    try { seqOutSec = seq.end.seconds || 0; } catch (eE) {}
+    try { var se = seq.end.seconds; if (se && se > 0) seqOutSec = se; } catch (eE) {}
+    var maxClipEndSec = 0;
 
     var tracks = [];
     var vi, ti, track, item, j, n;
@@ -73,6 +76,7 @@ $._SYNC_.getTimelineSnapshot = function () {
         try {
           item = track.clips[j];
           if (!item) continue;
+          if (item.end.seconds > maxClipEndSec) maxClipEndSec = item.end.seconds;
           clips.push({
             trackIndex: vi, trackType: 'video', name: item.name || '', nodeId: String(item.nodeId),
             startSec: item.start.seconds, endSec: item.end.seconds,
@@ -97,6 +101,7 @@ $._SYNC_.getTimelineSnapshot = function () {
               else if (aPi.mediaPath) aMediaPath = String(aPi.mediaPath);
             }
           } catch (eMP) {}
+          if (item.end.seconds > maxClipEndSec) maxClipEndSec = item.end.seconds;
           clips.push({
             trackIndex: ti, trackType: 'audio', name: item.name || '', nodeId: String(item.nodeId),
             startSec: item.start.seconds, endSec: item.end.seconds,
@@ -107,6 +112,7 @@ $._SYNC_.getTimelineSnapshot = function () {
         } catch (e6) {}
       }
     }
+    if (seqOutSec <= 0) seqOutSec = maxClipEndSec;
     return JSON.stringify({
       ok: true, sequenceName: seq.name, timebase: tb, fps: fps,
       playheadSec: playheadSec, sequenceOutSec: seqOutSec,
