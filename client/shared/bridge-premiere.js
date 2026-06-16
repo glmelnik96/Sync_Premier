@@ -46,8 +46,8 @@
       setTimeout(tryLoad, DELAYS[attempt]);
     },
 
-    evalJson: function (expr, callback) {
-      var TIMEOUT_MS = 30000;
+    evalJson: function (expr, callback, timeoutMs) {
+      var TIMEOUT_MS = timeoutMs || 30000;
       this.ensureHost(function (err) {
         if (err) { callback(err, null); return; }
         var state = 'pending';
@@ -129,6 +129,14 @@
     setClipLabel: function (nodeId, colorIndex, cb) {
       var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, colorIndex: colorIndex }));
       this.evalJson('$._SYNC_.setClipLabel("' + json + '")', cb);
+    },
+
+    /* export/import долгие (Premiere conform/parse) → таймаут 180с. */
+    exportActiveSequenceXml: function (cb) { this.evalJson('$._SYNC_.exportActiveSequenceXml()', cb, 180000); },
+
+    importSyncedXml: function (path, cb) {
+      var json = escapeDoubleQuoted(JSON.stringify({ path: String(path) }));
+      this.evalJson('$._SYNC_.importSyncedXml("' + json + '")', cb, 180000);
     }
   };
 })(window);

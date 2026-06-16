@@ -33,6 +33,40 @@
     applyBtn.disabled = rows.length === 0;
   }
 
+  /* ГИБРИД-ПАЙПЛАЙН (FCP7 XML round-trip, БЕЗ move()):
+     host экспортирует секвенцию в XML → панель парсит, гоняет DSP, пишет синхро-XML
+     (две секвенции _SYNCED/_UNSYNCED) → host importFiles. Никакой мутации живого
+     таймлайна — Premiere строит свежие секвенции импортом. */
+  document.getElementById('syncXml').addEventListener('click', function () {
+    var T = window.FcpXmlTransform;
+    var fs; try { fs = require('fs'); } catch (e) { setStatus('Ошибка: Node fs недоступен (нужен <CEFCommandLine>)'); return; }
+    setStatus('Экспорт секвенции в XML…');
+    window.PremiereBridge.exportActiveSequenceXml(function (err, exp) {
+      if (err || !exp || !exp.path) { setStatus('Ошибка экспорта: ' + (err ? err.message : 'нет пути')); return; }
+      var xml;
+      try { xml = fs.readFileSync(exp.path, 'utf8'); } catch (e2) { setStatus('Ошибка чтения XML: ' + e2.message); return; }
+      var rate = T.deriveRate(xml);
+      var parsed = T.parseXml(xml);
+      setStatus('Секвенция «' + exp.seqName + '»: ' + parsed.clips.length + ' клипов, синхронизация (огибающие)…');
+      var snapshot = T.buildSnapshot(parsed.clips, rate.frameSec);
+      window.SyncRunner.runClipSync(snapshot, { extractEnvelope: window.AudioEnvelope.extractEnvelope },
+        { refGate: 0.45, clipGate: 0.4, coarseWindowMs: 20 })
+        .then(function (rows) {
+          var res = T.applySyncToXml(xml, parsed.clips, rows, { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame });
+          var outPath = exp.path.replace(/sync_premier_in\.xml$/, 'sync_premier_out.xml');
+          fs.writeFileSync(outPath, res.xml, 'utf8');
+          var s = res.stats;
+          setStatus('Импорт синхро-секвенций (_SYNCED ' + s.syncedEndSec + 'с' + (s.hasUnsynced ? ', _UNSYNCED ' + s.unsynced + ' клипов' : '') + ')…');
+          window.PremiereBridge.importSyncedXml(outPath, function (e3, imp) {
+            if (e3 || !imp || !imp.ok) { setStatus('Ошибка импорта: ' + (e3 ? e3.message : 'importFiles=false')); return; }
+            var names = (imp.imported || []).map(function (x) { return x.name; }).join(', ');
+            setStatus('Готово ✓ Созданы секвенции: ' + names);
+          });
+        })
+        .catch(function (e4) { setStatus('Ошибка синхронизации: ' + e4.message); });
+    });
+  });
+
   document.getElementById('analyze').addEventListener('click', function () {
     setStatus('Чтение таймлайна…');
     window.PremiereBridge.getTimelineSnapshot(function (err, snap) {

@@ -259,6 +259,46 @@ $._SYNC_.backupActiveSequence = function () {
   }
 };
 
+/** ГИБРИД-ПАЙПЛАЙН (FCP7 XML round-trip без move()).
+    Экспорт активной секвенции в FCP7 XML во временную ASCII-папку (кириллица в пути
+    ломает File()). → {ok, path}. Панель прочитает файл, синхронизирует, импортирует. */
+$._SYNC_.exportActiveSequenceXml = function () {
+  try {
+    if (!app.project || !app.project.activeSequence) return JSON.stringify({ ok: false, error: 'Нет активной секвенции' });
+    var seq = app.project.activeSequence;
+    if (typeof seq.exportAsFinalCutProXML !== 'function') return JSON.stringify({ ok: false, error: 'exportAsFinalCutProXML недоступен' });
+    var f = new File(Folder.temp.fsName + '/sync_premier_in.xml');
+    var ok = seq.exportAsFinalCutProXML(f.fsName);
+    if (!ok) return JSON.stringify({ ok: false, error: 'экспорт XML не удался' });
+    return JSON.stringify({ ok: true, path: f.fsName, seqName: String(seq.name) });
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
+  }
+};
+
+/** Импорт синхро-XML (создаёт _SYNCED [+ _UNSYNCED] секвенции). paramsJson: {path}. */
+$._SYNC_.importSyncedXml = function (paramsJson) {
+  try {
+    var p = JSON.parse(paramsJson);
+    if (!app.project) return JSON.stringify({ ok: false, error: 'Нет проекта' });
+    var f = new File(p.path);
+    if (!f.exists) return JSON.stringify({ ok: false, error: 'Файл не найден: ' + p.path });
+    var before = {};
+    for (var i = 0; i < app.project.sequences.numSequences; i++) before[String(app.project.sequences[i].sequenceID)] = 1;
+    var ok = app.project.importFiles([f.fsName], true, app.project.rootItem, false);
+    var added = [];
+    for (var j = 0; j < app.project.sequences.numSequences; j++) {
+      var sq = app.project.sequences[j];
+      if (!before[String(sq.sequenceID)]) added.push({ id: String(sq.sequenceID), name: String(sq.name) });
+    }
+    /* активировать главную _SYNCED */
+    for (var k = 0; k < added.length; k++) if (/_SYNCED$/.test(added[k].name)) { app.project.openSequence(added[k].id); break; }
+    return JSON.stringify({ ok: !!ok, imported: added });
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
+  }
+};
+
 /** Переоткрыть активную секвенцию (toggle через другую) — снимает косметические бейджи
     рассинхрона, которые Premiere оставляет после скриптовых перемещений клипов. */
 $._SYNC_.refreshActiveSequence = function () {
