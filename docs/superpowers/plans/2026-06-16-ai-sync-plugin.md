@@ -360,7 +360,9 @@ Expected: FAIL — `SC.detectDrift is not a function`
 ```javascript
   /**
    * Детекция линейного дрейфа: корреляция окна у начала и у конца клипа против
-   * опорной огибаюшей. slope = (τ_конца − τ_начала) / промежуток_в_секундах.
+   * опорной огибаюшей. Конвенция знака: slope = (τ_начала − τ_конца) / промежуток,
+   * чтобы коррекция `setClipSpeed(1 + slope)` в Task 13 ИМЕННО компенсировала дрейф
+   * (клип быстрее → τ растёт к концу → slope<0 → ratio<1 → замедление возвращает синхрон).
    * opt: {dtSec, windowSamples, maxLag, driftFrameThreshold=1, fps=25}
    * Возвращает {tau0Sec, tau1Sec, slope, hasDrift, corr0, corr1}.
    */
@@ -383,7 +385,7 @@ Expected: FAIL — `SC.detectDrift is not a function`
     var tau0 = r0.lagSamples * dt;
     var tau1 = r1.lagSamples * dt;
     var spanSec = (n - win) * dt;           // расстояние между центрами окон
-    var slope = spanSec > 0 ? (tau1 - tau0) / spanSec : 0;
+    var slope = spanSec > 0 ? (tau0 - tau1) / spanSec : 0;
 
     var fps = opt.fps || 25;
     var thrFrames = (typeof opt.driftFrameThreshold === 'number') ? opt.driftFrameThreshold : 1;
