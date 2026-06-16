@@ -37,13 +37,17 @@
     setStatus('Чтение таймлайна…');
     window.PremiereBridge.getTimelineSnapshot(function (err, snap) {
       if (err) { setStatus('Ошибка: ' + err.message); return; }
-      setStatus('Секвенция: ' + snap.sequenceName + ' | source-синхронизация (извлечение огибающих)…');
-      /* Source-based глобальная синхронизация (модель Syncaila): группировка по
-         source-файлу, попарный граф офсетов, размещение клипов по общим часам. */
-      window.SyncRunner.runSourceSync(snap, {
+      setStatus('Секвенция: ' + snap.sequenceName + ' | per-clip синхронизация (извлечение огибающих)…');
+      /* Per-clip синхронизация (модель Syncaila): каждый клип матчится против
+         референсов-«часов», roaming-источники и комнаты разделяются автоматически. */
+      window.SyncRunner.runClipSync(snap, {
         extractEnvelope: window.AudioEnvelope.extractEnvelope
-      }, { minCorr: 0.4, coarseWindowMs: 20 })
-        .then(function (rows) { onAnalyzed(rows); setStatus('Готово: ' + rows.length + ' клипов (source-синхронизация)'); })
+      }, { refGate: 0.45, clipGate: 0.4, coarseWindowMs: 20 })
+        .then(function (rows) {
+          onAnalyzed(rows);
+          var comps = {}; rows.forEach(function (r) { if (r.component >= 0) comps[r.component] = 1; });
+          setStatus('Готово: ' + rows.length + ' клипов, комнат: ' + Object.keys(comps).length);
+        })
         .catch(function (e) { setStatus('Ошибка: ' + e.message); });
     });
   });

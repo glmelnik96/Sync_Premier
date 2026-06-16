@@ -67,3 +67,45 @@ test('runSourceSync: разбросанные клипы разных источ
   assert.equal(byNode.r1.component, byNode.a1.component);
   assert.equal(byNode.a1.component, byNode.b1.component);
 });
+
+test('runClipSync: roaming-источник разъезжается поклипно по двум комнатам', async () => {
+  const ctx = loadCtx();
+  const dt = 0.02;
+  // две независимые «комнаты» (разный звук)
+  const room1 = master(4000, 11);
+  const room2 = master(4000, 999);
+  // рекордеры комнат = непрерывные источники (референсы)
+  // roaming source = файл, содержащий кусок room1 потом кусок room2 (камера переходила)
+  const roam = new Float64Array(2000);
+  for (let i = 0; i < 1000; i++) roam[i] = room1[600 + i];      // roam[0..1000] = room1[600..1600]
+  for (let i = 0; i < 1000; i++) roam[1000 + i] = room2[300 + i]; // roam[1000..2000] = room2[300..1300]
+  const sources = { 'rec1.wav': room1, 'rec2.wav': room2, 'roam.mov': roam };
+  const snapshot = {
+    fps: 25, sequenceOutSec: 4000 * dt,
+    clips: [
+      { trackType: 'audio', trackIndex: 0, nodeId: 'r1c', name: 'rec1', mediaPath: 'rec1.wav', startSec: 0, endSec: 80, inPointSec: 0 },
+      { trackType: 'audio', trackIndex: 1, nodeId: 'r2c', name: 'rec2', mediaPath: 'rec2.wav', startSec: 500, endSec: 580, inPointSec: 0 },
+      // клип roaming из room1-части (inPoint 100 → roam[100..700] = room1[700..1300])
+      { trackType: 'audio', trackIndex: 2, nodeId: 'roamA', name: 'roam', mediaPath: 'roam.mov', startSec: 900, endSec: 912, inPointSec: 2 },
+      // клип roaming из room2-части (inPoint 1100 → roam[1100..1700] = room2[400..1000])
+      { trackType: 'audio', trackIndex: 2, nodeId: 'roamB', name: 'roam', mediaPath: 'roam.mov', startSec: 950, endSec: 962, inPointSec: 22 }
+    ]
+  };
+  const deps = { extractEnvelope: (path, o) => {
+    const full = sources[path];
+    if (o && o.startSec != null) {
+      const lo = Math.round(o.startSec / dt), hi = Math.round((o.startSec + o.durSec) / dt);
+      return Promise.resolve({ env: full.subarray(lo, Math.min(hi, full.length)), dtSec: dt });
+    }
+    return Promise.resolve({ env: full, dtSec: dt });
+  } };
+  const rows = await ctx.SyncRunner.runClipSync(snapshot, deps, { refGate: 0.45, clipGate: 0.4 });
+  const byNode = {}; rows.forEach((x) => { byNode[x.nodeId] = x; });
+  // roamA (room1-контент) и roamB (room2-контент) должны попасть в РАЗНЫЕ комнаты
+  assert.equal(byNode.roamA.status, 'sync');
+  assert.equal(byNode.roamB.status, 'sync');
+  assert.notEqual(byNode.roamA.component, byNode.roamB.component, 'клипы roaming-источника в разных комнатах');
+  // roamA в одной комнате с rec1, roamB — с rec2
+  assert.equal(byNode.roamA.component, byNode.r1c.component);
+  assert.equal(byNode.roamB.component, byNode.r2c.component);
+});
