@@ -381,10 +381,26 @@
             var le = (v4.roomTarget - minByClock[cid]) + (v4.clip.endSec - v4.clip.startSec); if (le > roomEnd) roomEnd = le; }
           cursor += roomEnd + GAP;
         }
-        /* несвязанные клипы — последовательно В КОНЕЦ, статус 'unsynced' (красный label) */
-        var unsynced = matched.filter(function (m) { return !m.connected; }).sort(function (a, b) { return a.clip.startSec - b.clip.startSec; });
+        /* несвязанные клипы — последовательно В КОНЕЦ, статус 'unsynced' (красный label).
+           ВАЖНО: связанные аудио-копии одного физического клипа (напр. P-камера: 1 видео +
+           4 аудио-дорожки) — это ОДНА единица, двигаются вместе. Группируем по инстансу
+           (mediaPath+inPoint+исходный start), назначаем ОДИН target на группу; иначе каждая
+           копия тянула бы связанную группу дальше (был баг: клип уезжал на 20 мин в пустоту). */
+        var unsynced = matched.filter(function (m) { return !m.connected; });
+        function instKey(m) { return m.clip.mediaPath + '|' + Math.round(m.clip.inPointSec * 100) + '|' + Math.round(m.clip.startSec * 100); }
+        var ugroups = {}, uorder = [];
+        for (var ug = 0; ug < unsynced.length; ug++) {
+          var uk = instKey(unsynced[ug]);
+          if (!ugroups[uk]) { ugroups[uk] = { dur: unsynced[ug].clip.endSec - unsynced[ug].clip.startSec, firstStart: unsynced[ug].clip.startSec, members: [] }; uorder.push(uk); }
+          ugroups[uk].members.push(unsynced[ug]);
+        }
+        uorder.sort(function (a, b) { return ugroups[a].firstStart - ugroups[b].firstStart; });
         var ucur = cursor;
-        for (var us = 0; us < unsynced.length; us++) { unsynced[us].endTarget = ucur; ucur += (unsynced[us].clip.endSec - unsynced[us].clip.startSec) + GAP; }
+        for (var uo = 0; uo < uorder.length; uo++) {
+          var grp = ugroups[uorder[uo]];
+          for (var gm = 0; gm < grp.members.length; gm++) grp.members[gm].endTarget = ucur;
+          ucur += grp.dur + GAP;
+        }
 
         var rows = [];
         for (var n = 0; n < matched.length; n++) {
