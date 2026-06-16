@@ -16,11 +16,21 @@
   }
 
   function renderResults(rows) {
-    var html = rows.map(function (r) {
-      return '<div class="clip-row status-' + r.status + '"><span>' + r.name + ' (A' + (r.trackIndex + 1) +
-        ')</span><span>' + (r.shiftSec * 1000).toFixed(0) + 'мс · ' + r.status + ' · ' + r.confidence.toFixed(2) + '</span></div>';
+    var html = rows.map(function (r, idx) {
+      return '<div class="clip-row status-' + r.status + '" data-idx="' + idx + '" style="cursor:pointer"><span>' +
+        r.name + ' (A' + (r.trackIndex + 1) + ')</span><span>' + (r.shiftSec * 1000).toFixed(0) +
+        'мс · ' + r.status + ' · ' + r.confidence.toFixed(2) + '</span></div>';
     }).join('');
-    document.getElementById('results').innerHTML = html;
+    var resEl = document.getElementById('results');
+    resEl.innerHTML = html;
+    resEl.querySelectorAll('.clip-row').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var r = lastRows[parseInt(el.getAttribute('data-idx'), 10)];
+        if (!r || !r.refSeg) return;
+        var shiftSamples = r.dtSec ? (r.shiftSec / r.dtSec) : 0;
+        window.SyncWaveform.drawPair(document.getElementById('wave'), r.refSeg, r.clipEnv, shiftSamples);
+      });
+    });
   }
 
   function onAnalyzed(rows) {

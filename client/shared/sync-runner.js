@@ -69,7 +69,8 @@
           var res = SG.resolveClipOffset({ lagSamples: m.lagSamples, corr: m.corr, dtSec: dt,
             slope: drift.slope, hasDrift: drift.hasDrift }, { confidenceThreshold: opt.confidenceThreshold });
           return { nodeId: c.nodeId, name: c.name, trackIndex: c.trackIndex,
-            shiftSec: res.shiftSec, confidence: res.confidence, slope: res.slope, status: res.status };
+            shiftSec: res.shiftSec, confidence: res.confidence, slope: res.slope, status: res.status,
+            dtSec: dt, refSeg: seg, clipEnv: e.env };
         });
       });
     });
