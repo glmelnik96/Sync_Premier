@@ -186,12 +186,15 @@ $._SYNC_.moveClip = function (paramsJson) {
     }
     if (minStart + delta < 0) delta = -minStart; /* клампим единым сдвигом, без разрыва линковки */
 
+    /* Двигаем через TrackItem.move(offset): сохраняет связь клипа с источником.
+       Присваивание clip.start/clip.end визуально перемещает клип, но рвёт внутреннюю
+       привязку к медиа → чёрный кадр и тишина при воспроизведении (in/out при этом
+       выглядят корректно). move() сдвигает на смещение, не трогая источник. */
     var moved = 0;
+    var offset = new Time();
+    offset.ticks = String(Math.round(delta));
     for (ii = 0; ii < items.length; ii++) {
-      var it = items[ii];
-      var cs = parseFloat(it.start.ticks);
-      var dur = parseFloat(it.end.ticks) - cs;
-      $._SYNC_._setClipPosition(it, cs + delta, dur);
+      items[ii].move(offset);
       moved++;
     }
     return JSON.stringify({ ok: true, nodeId: String(p.nodeId), movedItems: moved, appliedDeltaTicks: String(Math.round(delta)) });
