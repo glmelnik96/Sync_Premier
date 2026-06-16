@@ -117,6 +117,8 @@
     activateSequenceById: function (seqId, cb) {
       var s = String(seqId).replace(/"/g, '\\"');
       this.evalJson('$._SYNC_.activateSequenceById("' + s + '")', cb);
-    }
+    },
+
+    refreshActiveSequence: function (cb) { this.evalJson('$._SYNC_.refreshActiveSequence()', cb); }
   };
 })(window);

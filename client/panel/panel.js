@@ -65,7 +65,12 @@
          осмысленны (камера не писала), уплотнение разрушило бы выравнивание. */
       (function next() {
         if (i >= toMove.length) {
-          setStatus('Синхронизировано: ' + toMove.length + ' клипов');
+          /* Переоткрыть секвенцию: снимает косметические бейджи рассинхрона,
+             которые Premiere оставляет после скриптовых move(). */
+          setStatus('Синхронизировано: ' + toMove.length + ' клипов. Обновление…');
+          window.PremiereBridge.refreshActiveSequence(function () {
+            setStatus('Синхронизировано: ' + toMove.length + ' клипов');
+          });
           return;
         }
         var r = toMove[i++];

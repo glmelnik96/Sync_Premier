@@ -234,6 +234,24 @@ $._SYNC_.backupActiveSequence = function () {
   }
 };
 
+/** Переоткрыть активную секвенцию (toggle через другую) — снимает косметические бейджи
+    рассинхрона, которые Premiere оставляет после скриптовых перемещений клипов. */
+$._SYNC_.refreshActiveSequence = function () {
+  try {
+    if (!app.project || !app.project.activeSequence) return JSON.stringify({ ok: false, error: 'Нет активной секвенции' });
+    var targetId = String(app.project.activeSequence.sequenceID);
+    var seqs = app.project.sequences, otherId = null;
+    for (var i = 0; i < seqs.numSequences; i++) {
+      if (String(seqs[i].sequenceID) !== targetId) { otherId = String(seqs[i].sequenceID); break; }
+    }
+    if (otherId) app.project.openSequence(otherId); /* увести фокус */
+    app.project.openSequence(targetId);             /* и вернуть → перерисовка таймлайна */
+    return JSON.stringify({ ok: true, refreshed: targetId });
+  } catch (e) {
+    return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
+  }
+};
+
 /** Уплотнить дорожку: каждый клип прижимается к концу предыдущего (закрытие пауз/перекрытий). */
 $._SYNC_.rippleCloseGaps = function (paramsJson) {
   try {
