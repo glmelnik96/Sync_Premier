@@ -75,40 +75,81 @@ async function main() {
 
   // target/status по ключу (path + исходный startFrame): связанные video+audio совпадают
   const keyOf = (path, startFrames) => path + '|' + startFrames;
-  const targetByKey = {}, statusByKey = {}, compByKey = {};
-  // сопоставить строки с исходными аудио-клипами по nodeId
+  const planByKey = {}; /* key → {targetFrames, status, comp} */
   const clipById = {}; clips.forEach((c) => { clipById[c.id] = c; });
   for (const r of rows) {
     const c = clipById[r.nodeId]; if (!c) continue;
-    const k = keyOf(c.path, c.start);
-    targetByKey[k] = r.targetSec;
-    statusByKey[k] = r.status;
-    compByKey[k] = r.component;
+    planByKey[keyOf(c.path, c.start)] = {
+      targetFrames: Math.max(0, Math.round(r.targetSec / FRAME)),
+      status: r.status, comp: r.component
+    };
   }
 
-  // применить: переписать <start>/<end> и label для КАЖДОГО clipitem (video+audio)
+  // ── Фаза 1: вычислить план каждого clipitem (start/end/in/out в кадрах, comp, status) ──
+  for (const c of clips) {
+    const p = planByKey[keyOf(c.path, c.start)];
+    if (!p) { c.plan = null; continue; }
+    const dur = c.end - c.start;
+    c.plan = {
+      start: p.targetFrames, end: p.targetFrames + dur,
+      inP: c.inP, out: c.out,           // источник не сдвигается (только позиция)
+      comp: p.comp, status: p.status, enabled: true, drop: false
+    };
+  }
+
+  // ── Фаза 2: покрытие ВИДЕО по комнатам (для обрезки lone-аудио) ──
+  const vCover = {}; /* comp → {vs, ve} в target-кадрах */
+  for (const c of clips) {
+    if (c.type !== 'video' || !c.plan || c.plan.status === 'unsynced') continue;
+    const k = c.plan.comp;
+    if (!vCover[k]) vCover[k] = { vs: c.plan.start, ve: c.plan.end };
+    else { if (c.plan.start < vCover[k].vs) vCover[k].vs = c.plan.start; if (c.plan.end > vCover[k].ve) vCover[k].ve = c.plan.end; }
+  }
+
+  // ── Фаза 3 (Syncaila): обрезать lone-аудио до покрытия видео своей комнаты ──
+  // Убирает стоп-кадры: и 3-мин чёрное интро (рекордер до камер), и хвост (камера off).
+  let trimmedHead = 0, trimmedTail = 0, dropped = 0;
+  for (const c of clips) {
+    if (c.type !== 'audio' || !c.plan || c.plan.status === 'unsynced') continue;
+    const cov = vCover[c.plan.comp]; if (!cov) continue;
+    if (c.plan.start < cov.vs) { const d = cov.vs - c.plan.start; c.plan.start += d; c.plan.inP += d; trimmedHead += d; }
+    if (c.plan.end > cov.ve) { const d = c.plan.end - cov.ve; c.plan.end -= d; c.plan.out -= d; trimmedTail += d; }
+    if (c.plan.end <= c.plan.start) { c.plan.drop = true; dropped++; } // полностью вне видео
+  }
+
+  // ── Фаза 4: несвязанные клипы → выключить (enabled=FALSE) + красный label ──
+  for (const c of clips) if (c.plan && c.plan.status === 'unsynced') c.plan.enabled = false;
+
+  // ── Фаза 5: глобальный сдвиг к 0 (самый ранний оставшийся клип в 0) ──
+  let gmin = null;
+  for (const c of clips) if (c.plan && !c.plan.drop) { if (gmin === null || c.plan.start < gmin) gmin = c.plan.start; }
+  if (gmin === null) gmin = 0;
+  for (const c of clips) if (c.plan && !c.plan.drop) { c.plan.start -= gmin; c.plan.end -= gmin; }
+
+  // ── Фаза 6: записать XML ──
   let synced = 0, unsynced = 0, untouched = 0, maxEndFrames = 0;
   for (const c of clips) {
-    const k = keyOf(c.path, c.start);
     let block = c.fullMatch;
-    if (targetByKey.hasOwnProperty(k)) {
-      const dur = c.end - c.start;
-      let newStart = Math.round(targetByKey[k] / FRAME);
-      if (newStart < 0) newStart = 0;
-      const newEnd = newStart + dur;
+    if (!c.plan) { untouched++; continue; }
+    if (c.plan.drop) {
+      // полностью lone-аудио → убрать clipitem из секвенции
+      block = '';
+    } else {
       block = block
-        .replace(/<start>-?\d+<\/start>/, `<start>${newStart}</start>`)
-        .replace(/<end>-?\d+<\/end>/, `<end>${newEnd}</end>`);
-      if (newEnd > maxEndFrames) maxEndFrames = newEnd;
-      if (statusByKey[k] === 'unsynced') {
+        .replace(/<start>-?\d+<\/start>/, `<start>${c.plan.start}</start>`)
+        .replace(/<end>-?\d+<\/end>/, `<end>${c.plan.end}</end>`)
+        .replace(/<in>-?\d+<\/in>/, `<in>${c.plan.inP}</in>`)
+        .replace(/<out>-?\d+<\/out>/, `<out>${c.plan.out}</out>`);
+      if (c.plan.end > maxEndFrames) maxEndFrames = c.plan.end;
+      if (!c.plan.enabled) {
+        block = block.replace(/<enabled>TRUE<\/enabled>/, '<enabled>FALSE</enabled>');
         block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
         unsynced++;
       } else synced++;
-    } else {
-      untouched++;
     }
     if (block !== c.fullMatch) xml = xml.replace(c.fullMatch, block);
   }
+  console.log(`trim: head=${trimmedHead}f tail=${trimmedTail}f dropped=${dropped} | shift→0 by ${gmin}f`);
 
   // имя секвенции
   xml = xml.replace(/<name>([^<]*)<\/name>/, (m, n) => `<name>${n}_SYNCED</name>`);
