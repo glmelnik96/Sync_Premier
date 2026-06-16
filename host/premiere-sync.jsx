@@ -271,6 +271,13 @@ $._SYNC_.refreshActiveSequence = function () {
     }
     if (otherId) app.project.openSequence(otherId); /* увести фокус */
     app.project.openSequence(targetId);             /* и вернуть → перерисовка таймлайна */
+    /* Плейхед → 0. После скриптовых move() он может остаться в позиции исходной
+       секвенции (за концом нового контента) → воспроизведение «улетает в начало».
+       Стандэлон-валидация показала: сброс плейхеда в 0 устраняет это. */
+    try {
+      var s = app.project.activeSequence;
+      if (s && typeof s.setPlayerPosition === 'function') s.setPlayerPosition('0');
+    } catch (ep) {}
     return JSON.stringify({ ok: true, refreshed: targetId });
   } catch (e) {
     return JSON.stringify({ ok: false, error: String(e && e.message ? e.message : e) });
