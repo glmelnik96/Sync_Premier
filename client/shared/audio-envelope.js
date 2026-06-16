@@ -39,9 +39,10 @@
     return { dtSec: win / sr, env: env };
   }
 
-  /** Извлечь огибающую из аудиофайла (опц. сегмент [startSec, durSec]). */
+  /** Извлечь огибающую из аудиофайла (опц. сегмент [startSec, durSec], опц. windowMs). */
   function extractEnvelope(path, opt) {
     opt = opt || {};
+    var winMs = (typeof opt.windowMs === 'number') ? opt.windowMs : WINDOW_MS;
     return new Promise(function (resolve, reject) {
       if (!hasNode()) return reject(new Error('Node.js недоступен'));
       var bin = findFfmpegPath();
@@ -51,14 +52,14 @@
       if (opt.durSec != null) args.push('-t', String(opt.durSec));
       args.push('-i', path, '-map', '0:a:0?', '-vn', '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', '-');
       var execFile = require('child_process').execFile;
-      execFile(bin, args, { timeout: 300000, maxBuffer: 512 * 1024 * 1024, encoding: 'buffer' },
+      execFile(bin, args, { timeout: 600000, maxBuffer: 1024 * 1024 * 1024, encoding: 'buffer' },
         function (err, stdout) {
           if (err && !(stdout && stdout.length)) return reject(new Error('ffmpeg: ' + String(err.message || err)));
           var buf = stdout;
           var n = Math.floor(buf.length / 2);
           var pcm = new Float32Array(n);
           for (var i = 0; i < n; i++) pcm[i] = buf.readInt16LE(i * 2) / 32768;
-          resolve(pcmToEnvelope(pcm, SAMPLE_RATE, WINDOW_MS));
+          resolve(pcmToEnvelope(pcm, SAMPLE_RATE, winMs));
         });
     });
   }
