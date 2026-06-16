@@ -59,3 +59,35 @@ test('confidenceOk отсекает тишину (нет ложного матч
   assert.equal(SC.confidenceOk(0.2, 0.5), false);
   assert.equal(SC.confidenceOk(0.7, 0.5), true);
 });
+
+test('detectDrift восстанавливает наклон растянутой копии', () => {
+  const SC = loadSyncCore();
+  const len = 4000;
+  const ref = new Float64Array(len);
+  for (let i = 0; i < len; i++) ref[i] = Math.abs(Math.sin(i / 7)) + Math.abs(Math.sin(i / 17));
+  // clip = ref, растянутый на 0.5% (накапливает сдвиг к концу) + базовый офсет 0
+  const stretch = 1.005;
+  const clip = new Float64Array(len);
+  for (let i = 0; i < len; i++) {
+    const s = i / stretch;
+    const lo = Math.floor(s), frac = s - lo;
+    const v0 = (lo >= 0 && lo < len) ? ref[lo] : 0;
+    const v1 = (lo + 1 < len) ? ref[lo + 1] : 0;
+    clip[i] = v0 * (1 - frac) + v1 * frac;
+  }
+  const dtSec = 0.005;        // 5 мс на сэмпл огибающей
+  const r = SC.detectDrift(ref, clip, { dtSec: dtSec, windowSamples: 400, maxLag: 200 });
+  // ожидаемый slope ≈ -(stretch-1) = -0.005 (clip идёт быстрее → конец «убегает» назад)
+  assert.ok(Math.abs(r.slope - (-(stretch - 1))) < 0.002, `slope=${r.slope}`);
+  assert.ok(r.hasDrift, 'дрейф должен быть отмечен');
+});
+
+test('detectDrift: короткий ровный клип → slope≈0, hasDrift=false', () => {
+  const SC = loadSyncCore();
+  const len = 2000;
+  const a = new Float64Array(len);
+  for (let i = 0; i < len; i++) a[i] = Math.abs(Math.sin(i / 9));
+  const r = SC.detectDrift(a, a, { dtSec: 0.005, windowSamples: 400, maxLag: 200, driftFrameThreshold: 1, fps: 25 });
+  assert.ok(Math.abs(r.slope) < 1e-4, `slope=${r.slope}`);
+  assert.equal(r.hasDrift, false);
+});
