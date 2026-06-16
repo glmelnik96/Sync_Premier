@@ -196,7 +196,13 @@ async function main() {
     unsSeq = unsSeq.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, `$1${unsyncedEndF}$2`)
       .replace(/MZ\.WorkOutPoint="[0-9]+"/, `MZ.WorkOutPoint="${unsyncedEndF * TICKS_PER_FRAME}"`)
       .replace(/Monitor\.ProgramZoomOut="[0-9]+"/, `Monitor.ProgramZoomOut="${unsyncedEndF * TICKS_PER_FRAME}"`)
-      .replace(/<uuid>[^<]*<\/uuid>/, `<uuid>${genUuid()}</uuid>`);
+      .replace(/<uuid>[^<]*<\/uuid>/, `<uuid>${genUuid()}</uuid>`)
+      // УНИКАЛЬНЫЙ id секвенции: Premiere дедуплицирует по <sequence id>, при дубле
+      // импортирует только одну. Переименовываем id и ВСЕ внутренние id (clipitem/file/
+      // masterclip/track) с суффиксом, чтобы не конфликтовали с первой секвенцией.
+      .replace(/<sequence id="sequence-1"/, '<sequence id="sequence-2"')
+      .replace(/(id=")(clipitem|file|masterclip)-(\d+)(")/g, '$1$2-u$3$4')
+      .replace(/(<(?:masterclipid|linkclipref)>)(clipitem|masterclip)-(\d+)(<)/g, '$1$2-u$3$4');
     out += '\n\t' + unsSeq;
   }
   out += xmlTail;
