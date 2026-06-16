@@ -66,9 +66,9 @@
   `com.gleb.aisync.panel`, меню **«ИИ: синхронизация»**, Host `PPRO [24.0,99.9]`,
   RequiredRuntime CSXS 12.0, CEFCommandLine: `--mixed-context --enable-nodejs
   --disable-application-cache`.
-- `CSXS/.debug` — порт отладки **8099** (родитель занимает 8098, конфликта нет).
+- `CSXS/.debug` — порт отладки **8100** (родитель занимает 8098, конфликта нет).
 - `client/lib/csinterface.js` — копия из родителя (генерик CEP-библиотека).
-- `tools/cep-debug.mjs` — копия из родителя, порт через `CEP_DEBUG_PORT` (default 8099).
+- `tools/cep-debug.mjs` — копия из родителя, порт через `CEP_DEBUG_PORT` (default 8100).
 - Установка: симлинк репозитория в
   `AppData/Roaming/Adobe/CEP/extensions/com.gleb.aisync` для разработки.
 
@@ -163,7 +163,7 @@ Host держим **тонким** намеренно — ограничивае
   - идентичное аудио → detect (высокий corr, τ≈0),
   - дрейф: растянутая копия с известным наклоном → детектор восстанавливает slope;
     короткий клип без дрейфа → slope≈0 (нет ложной коррекции).
-- **Live** через `cep-debug.mjs` (порт 8099) против открытого проекта пользователя:
+- **Live** через `cep-debug.mjs` (порт 8100) против открытого проекта пользователя:
   snapshot, по-клипный матчинг, Apply/Revert.
 
 ---
