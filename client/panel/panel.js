@@ -9,12 +9,6 @@
 
   function setStatus(s) { statusEl.textContent = s; }
 
-  function pGetClipMediaPath(nodeId) {
-    return new Promise(function (res, rej) {
-      window.PremiereBridge.getClipMediaPath(nodeId, function (e, d) { e ? rej(e) : res(d.mediaPath); });
-    });
-  }
-
   function renderResults(rows) {
     var html = rows.map(function (r, idx) {
       return '<div class="clip-row status-' + r.status + '" data-idx="' + idx + '" style="cursor:pointer"><span>' +
@@ -43,14 +37,13 @@
     setStatus('Чтение таймлайна…');
     window.PremiereBridge.getTimelineSnapshot(function (err, snap) {
       if (err) { setStatus('Ошибка: ' + err.message); return; }
-      var audio = window.TrackExtractor.audioTracksWithCoverage(snap);
-      var anchor = window.SyncGraph.pickAnchorTrack(audio);
-      setStatus('Секвенция: ' + snap.sequenceName + ' | опора: Audio ' + (anchor + 1) + ' | анализ клипов…');
-      window.SyncRunner.runSync(snap, anchor, {
-        getClipMediaPath: pGetClipMediaPath,
+      setStatus('Секвенция: ' + snap.sequenceName + ' | source-синхронизация (извлечение огибающих)…');
+      /* Source-based глобальная синхронизация (модель Syncaila): группировка по
+         source-файлу, попарный граф офсетов, размещение клипов по общим часам. */
+      window.SyncRunner.runSourceSync(snap, {
         extractEnvelope: window.AudioEnvelope.extractEnvelope
-      }, {})
-        .then(function (rows) { onAnalyzed(rows); setStatus('Готово: ' + rows.length + ' клипов'); })
+      }, { minCorr: 0.4, coarseWindowMs: 20 })
+        .then(function (rows) { onAnalyzed(rows); setStatus('Готово: ' + rows.length + ' клипов (source-синхронизация)'); })
         .catch(function (e) { setStatus('Ошибка: ' + e.message); });
     });
   });
