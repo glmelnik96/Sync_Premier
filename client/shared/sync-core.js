@@ -48,9 +48,16 @@
     return { lagSamples: best.lag + sub, corr: best.corr };
   }
 
+  /** Гейт уверенности: пик корреляции должен быть выше порога, иначе матч ненадёжен. */
+  function confidenceOk(corr, threshold) {
+    var t = (typeof threshold === 'number') ? threshold : 0.5;
+    return corr >= t;
+  }
+
   global.SyncCore = {
     zeroMean: zeroMean,
     norm: norm,
-    normXCorr: normXCorr
+    normXCorr: normXCorr,
+    confidenceOk: confidenceOk
   };
 })(typeof window !== 'undefined' ? window : this);
