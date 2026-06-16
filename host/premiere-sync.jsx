@@ -8,15 +8,6 @@ if (typeof $._SYNC_ === 'undefined') { $._SYNC_ = {}; }
 
 $._SYNC_.version = '0.1.0';
 
-/** Тиков в секунде для активной секвенции (timebase в тиках/кадр). Fallback ~25fps. */
-$._SYNC_._ticksPerSecond = function (seq) {
-  var tb = parseFloat(seq.timebase);
-  if (!tb || isNaN(tb)) tb = 10160640000;
-  /* timebase = тиков на кадр; 254016000000 тиков/сек / (тиков на кадр) = fps.
-     Тиков в секунде = 254016000000 (константа Premiere). */
-  return 254016000000;
-};
-
 /** Поиск клипа (и его дорожки) по nodeId — обход video + audio дорожек. */
 $._SYNC_._findClipByNodeId = function (seq, nodeId) {
   var id = String(nodeId);

@@ -38,15 +38,19 @@
   function runSync(snapshot, anchorIndex, deps, opt) {
     opt = opt || {};
     var TE = global.TrackExtractor, SC = global.SyncCore, SG = global.SyncGraph;
-    var dt = 0.005;
+    /* dt берём из огибающей (а не хардкодим): зависит от AudioEnvelope.SAMPLE_RATE/WINDOW_MS. */
+    var dt = (global.AudioEnvelope ? (global.AudioEnvelope.WINDOW_MS / 1000) : 0.005);
     var totalSec = snapshot.sequenceOutSec || 0;
+    var searchWindowSec = opt.searchWindowSec || 5;
+    var maxLag = Math.round(searchWindowSec / dt);
+    var driftMaxLag = 200; /* дрейф ищем в узком окне у краёв (не в полном поиске) */
     var anchorClips = TE.clipsForTrack(snapshot, 'audio', anchorIndex);
 
     /* 1. огибающие клипов опоры */
     return mapSeries(anchorClips, function (c) {
       return deps.getClipMediaPath(c.nodeId).then(function (path) {
         return deps.extractEnvelope(path, { startSec: c.inPointSec, durSec: c.endSec - c.startSec })
-          .then(function (e) { return { startSec: c.startSec, env: e.env }; });
+          .then(function (e) { if (e.dtSec) dt = e.dtSec; return { startSec: c.startSec, env: e.env }; });
       });
     }).then(function (anchorEnvs) {
       var anchor = buildAnchorEnvelope(anchorEnvs, dt, totalSec);
@@ -61,11 +65,15 @@
         return deps.getClipMediaPath(c.nodeId).then(function (path) {
           return deps.extractEnvelope(path, { startSec: c.inPointSec, durSec: c.endSec - c.startSec });
         }).then(function (e) {
-          var maxLag = Math.round((opt.searchWindowSec || 5) / dt);
+          /* Срез опоры в текущей позиции клипа; normXCorr ищет сдвиг ±maxLag.
+             Ограничение (review #3): диапазон сдвига ограничен длиной перекрытия —
+             для типичных сдвигов синхронизации (<1с) достаточно. detectDrift получает
+             тот же выровненный по base срез (важно: его окна head/tail предполагают
+             выравнивание с клипом по индексу 0). */
           var base = Math.round(c.startSec / dt);
           var seg = anchor.env.subarray(Math.max(0, base), Math.min(anchor.env.length, base + e.env.length));
           var m = SC.normXCorr(seg, e.env, maxLag);
-          var drift = SC.detectDrift(seg, e.env, { dtSec: dt, windowSamples: 400, maxLag: maxLag, fps: snapshot.fps });
+          var drift = SC.detectDrift(seg, e.env, { dtSec: dt, windowSamples: 400, maxLag: driftMaxLag, fps: snapshot.fps });
           var res = SG.resolveClipOffset({ lagSamples: m.lagSamples, corr: m.corr, dtSec: dt,
             slope: drift.slope, hasDrift: drift.hasDrift }, { confidenceThreshold: opt.confidenceThreshold });
           return { nodeId: c.nodeId, name: c.name, trackIndex: c.trackIndex,
