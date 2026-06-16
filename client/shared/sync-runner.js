@@ -372,12 +372,23 @@
         var baseBySuper = {};
         for (var su in rawBySuper) if (rawBySuper.hasOwnProperty(su)) baseBySuper[su] = med(rawBySuper[su]);
 
+        /* предварительные target (base комнаты + позиция в супер-часах) */
+        var globalMin = null;
+        for (var n0 = 0; n0 < matched.length; n0++) {
+          var v0 = matched[n0]; if (!v0.valid) continue;
+          v0.target = (baseBySuper[v0.superId] || 0) + v0.superPos;
+          if (globalMin === null || v0.target < globalMin) globalMin = v0.target;
+        }
+        /* ГЛОБАЛЬНАЯ НОРМАЛИЗАЦИЯ: самый ранний клип всех комнат → 0 (как эталон Draft_2),
+           относительная раскладка внутри/между комнатами сохраняется. Иначе медиана-якорь
+           комнаты наследует исходный разброс таймлайна (контент уезжает на часы вправо). */
+        var shift0 = globalMin === null ? 0 : globalMin;
+
         var rows = [];
         for (var n = 0; n < matched.length; n++) {
           var x2 = matched[n], c2 = x2.clip;
           if (x2.valid) {
-            var base = baseBySuper[x2.superId] || 0;
-            var target = base + x2.superPos;
+            var target = x2.target - shift0;
             if (target < 0) target = 0;
             rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex,
               shiftSec: target - c2.startSec, targetSec: target, confidence: x2.best.corr,
