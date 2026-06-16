@@ -127,82 +127,83 @@ async function main() {
   let syncedEnd = 0;
   for (const c of clips) if (c.plan && !c.plan.drop && c.plan.status !== 'unsynced') { if (c.plan.end > syncedEnd) syncedEnd = c.plan.end; }
 
-  // ── Фаза 5b: несвязанные → ВПЛОТНУЮ в конец синхронного контента, ВКЛЮЧЕНЫ, красный
-  // label. У несвязанного клипа есть СВОЁ видео → стоп-кадра нет; монтажёр видит красный
-  // блок и разбирается вручную. Группировка по инстансу (mediaPath): связанные video+audio
-  // копии одного клипа двигаются как единое целое (сохраняем относительную раскладку). */
-  const GAP = 12; // ~0.5с в кадрах
-  let cursor = syncedEnd + GAP;
-  const ugroups = {}, uorder = [];
-  for (const c of clips) {
-    if (!c.plan || c.plan.drop || c.plan.status !== 'unsynced') continue;
-    if (!ugroups[c.path]) { ugroups[c.path] = { minStart: c.plan.start, members: [] }; uorder.push(c.path); }
-    ugroups[c.path].members.push(c);
-    if (c.plan.start < ugroups[c.path].minStart) ugroups[c.path].minStart = c.plan.start;
-  }
-  uorder.sort((a, b) => ugroups[a].minStart - ugroups[b].minStart);
-  for (const gk of uorder) {
-    const g = ugroups[gk], base = g.minStart, delta = cursor - base; let gend = 0;
-    for (const c of g.members) { c.plan.start += delta; c.plan.end += delta; if (c.plan.end > gend) gend = c.plan.end; }
-    cursor = gend + GAP;
-  }
+  // ── Фаза 5b: несвязанные → сдвиг к 0 (для ОТДЕЛЬНОЙ секвенции _UNSYNCED).
+  // Несвязанные НЕЛЬЗЯ держать в той же секвенции после синхронного контента: Premiere
+  // обрезает воспроизводимую длительность по концу основного контента → клип за границей
+  // виден в превью, но play туда не доходит и отскакивает в начало. Поэтому несвязанные
+  // выносим в свою секвенцию (модель Syncaila — отдельный таймлайн), полностью играбельную. */
+  let umin = null;
+  for (const c of clips) if (c.plan && !c.plan.drop && c.plan.status === 'unsynced') { if (umin === null || c.plan.start < umin) umin = c.plan.start; }
+  if (umin === null) umin = 0;
+  console.log(`trim: head=${trimmedHead}f tail=${trimmedTail}f dropped=${dropped} | synced shift→0 by ${gmin}f`);
 
-  // ── Фаза 6: записать XML ──
-  let synced = 0, unsynced = 0, untouched = 0, maxEndFrames = 0;
-  for (const c of clips) {
-    let block = c.fullMatch;
-    if (!c.plan) { untouched++; continue; }
-    if (c.plan.drop) {
-      // полностью lone-аудио → убрать clipitem из секвенции
-      block = '';
-    } else {
-      block = block
-        .replace(/<start>-?\d+<\/start>/, `<start>${c.plan.start}</start>`)
-        .replace(/<end>-?\d+<\/end>/, `<end>${c.plan.end}</end>`)
-        .replace(/<in>-?\d+<\/in>/, `<in>${c.plan.inP}</in>`)
-        .replace(/<out>-?\d+<\/out>/, `<out>${c.plan.out}</out>`);
-      if (c.plan.end > maxEndFrames) maxEndFrames = c.plan.end;
-      if (c.plan.status === 'unsynced') {
-        // несвязанный: ВКЛЮЧЁН (своё видео играет), помечен красным для ручного разбора
-        block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
-        unsynced++;
-      } else synced++;
-    }
-    if (block !== c.fullMatch) xml = xml.replace(c.fullMatch, block);
-  }
-  console.log(`trim: head=${trimmedHead}f tail=${trimmedTail}f dropped=${dropped} | shift→0 by ${gmin}f`);
-
-  // имя секвенции
-  xml = xml.replace(/<name>([^<]*)<\/name>/, (m, n) => `<name>${n}_SYNCED</name>`);
-
-  // ВАЖНО: привязать параметры секвенции к реальному концу контента, иначе остаётся
-  // фантомный пустой хвост от исходной секвенции, а унаследованный playhead (MZ.EditLine)
-  // садится в пустую зону → «play улетает в начало», стоп-кадры в превью.
+  // ── Фаза 6: собрать ДВЕ секвенции в одном xmeml ──
   const TICKS_PER_FRAME = 10594584000;
-  const endTicks = maxEndFrames * TICKS_PER_FRAME;
-  xml = xml.replace(/(<sequence\b[^>]*?)>/, (full, head) => {
-    let h = head;
-    h = h.replace(/MZ\.EditLine="[0-9]+"/, 'MZ.EditLine="0"');
-    h = h.replace(/MZ\.WorkInPoint="[0-9]+"/, 'MZ.WorkInPoint="0"');
-    h = h.replace(/MZ\.WorkOutPoint="[0-9]+"/, `MZ.WorkOutPoint="${endTicks}"`);
-    h = h.replace(/Monitor\.ProgramZoomOut="[0-9]+"/, `Monitor.ProgramZoomOut="${endTicks}"`);
-    h = h.replace(/Monitor\.ProgramZoomIn="[0-9]+"/, 'Monitor.ProgramZoomIn="0"');
-    return h + '>';
-  });
-  // <duration> секвенции (первый <duration> после <uuid>) → конец контента в кадрах
-  xml = xml.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, `$1${maxEndFrames}$2`);
+  function genUuid() { const h = () => Math.floor(Math.random() * 16).toString(16); let s = ''; for (let i = 0; i < 32; i++) s += (i === 8 || i === 12 || i === 16 || i === 20) ? '-' + h() : h(); return s; }
 
-  writeFileSync(OUT, xml, 'utf8');
-  console.log(`seq duration → ${maxEndFrames} frames (${Math.round(maxEndFrames * FRAME)}s), playhead → 0`);
-  console.log(`synced=${synced} unsynced(Rose)=${unsynced} untouched=${untouched} → ${OUT}`);
-  // краткая сводка строк
-  const bySrc = {};
-  for (const r of rows) {
-    const c = clipById[r.nodeId]; if (!c) continue;
-    const nm = (c.path || '').split(/[\/\\]/).pop();
-    if (!bySrc[nm]) bySrc[nm] = { status: r.status, comp: r.component, conf: +(r.confidence || 0).toFixed(2), tgt: Math.round(r.targetSec) };
+  let synced = 0, unsynced = 0, syncedEndF = 0, unsyncedEndF = 0;
+  function renderClip(c, mode) {
+    if (!c.plan || c.plan.drop) return '';                 // нет плана / lone-аудио → убрать
+    const isUns = c.plan.status === 'unsynced';
+    if (mode === 'synced' && isUns) return '';             // несвязанные не в главной
+    if (mode === 'unsynced' && !isUns) return '';          // синхронные не в _UNSYNCED
+    let s = c.plan.start, e = c.plan.end;
+    if (mode === 'unsynced') { s -= umin; e -= umin; }     // сдвиг несвязанных к 0
+    let block = c.fullMatch
+      .replace(/<start>-?\d+<\/start>/, `<start>${s}</start>`)
+      .replace(/<end>-?\d+<\/end>/, `<end>${e}</end>`)
+      .replace(/<in>-?\d+<\/in>/, `<in>${c.plan.inP}</in>`)
+      .replace(/<out>-?\d+<\/out>/, `<out>${c.plan.out}</out>`);
+    if (isUns) block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
+    if (mode === 'synced') { synced++; if (e > syncedEndF) syncedEndF = e; }
+    else { unsynced++; if (e > unsyncedEndF) unsyncedEndF = e; }
+    return block;
   }
-  console.log('sources:', JSON.stringify(bySrc, null, 0));
+
+  // единственный исходный <sequence>...</sequence> → шаблон для обеих
+  const seqM = xml.match(/<sequence\b[\s\S]*?<\/sequence>/);
+  if (!seqM) throw new Error('<sequence> не найден');
+  const seqTemplate = seqM[0];
+  const xmlHead = xml.slice(0, seqM.index);
+  const xmlTail = xml.slice(seqM.index + seqTemplate.length);
+
+  function buildSeq(mode, nameSuffix, endFrames) {
+    let blk = seqTemplate;
+    for (const c of clips) { const rep = renderClip(c, mode); if (rep !== c.fullMatch) blk = blk.replace(c.fullMatch, rep); }
+    const endTicks = endFrames * TICKS_PER_FRAME;
+    blk = blk.replace(/(<sequence\b[^>]*?)>/, (full, h) => {
+      h = h.replace(/MZ\.EditLine="[0-9]+"/, 'MZ.EditLine="0"');
+      h = h.replace(/MZ\.WorkInPoint="[0-9]+"/, 'MZ.WorkInPoint="0"');
+      h = h.replace(/MZ\.WorkOutPoint="[0-9]+"/, `MZ.WorkOutPoint="${endTicks}"`);
+      h = h.replace(/Monitor\.ProgramZoomOut="[0-9]+"/, `Monitor.ProgramZoomOut="${endTicks}"`);
+      h = h.replace(/Monitor\.ProgramZoomIn="[0-9]+"/, 'Monitor.ProgramZoomIn="0"');
+      return h + '>';
+    });
+    blk = blk.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, `$1${endFrames}$2`);
+    blk = blk.replace(/<name>([^<]*)<\/name>/, (m, n) => `<name>${n}${nameSuffix}</name>`);
+    return blk;
+  }
+
+  // сначала прогон 'synced' (заполнит syncedEndF), затем 'unsynced'
+  const mainSeq = buildSeq('synced', '_SYNCED', 0);
+  const mainSeqFixed = mainSeq.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, `$1${syncedEndF}$2`)
+    .replace(/MZ\.WorkOutPoint="[0-9]+"/, `MZ.WorkOutPoint="${syncedEndF * TICKS_PER_FRAME}"`)
+    .replace(/Monitor\.ProgramZoomOut="[0-9]+"/, `Monitor.ProgramZoomOut="${syncedEndF * TICKS_PER_FRAME}"`);
+  const hasUnsynced = clips.some((c) => c.plan && !c.plan.drop && c.plan.status === 'unsynced');
+  let out = xmlHead + mainSeqFixed;
+  if (hasUnsynced) {
+    let unsSeq = buildSeq('unsynced', '_UNSYNCED', 1);
+    unsSeq = unsSeq.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, `$1${unsyncedEndF}$2`)
+      .replace(/MZ\.WorkOutPoint="[0-9]+"/, `MZ.WorkOutPoint="${unsyncedEndF * TICKS_PER_FRAME}"`)
+      .replace(/Monitor\.ProgramZoomOut="[0-9]+"/, `Monitor.ProgramZoomOut="${unsyncedEndF * TICKS_PER_FRAME}"`)
+      .replace(/<uuid>[^<]*<\/uuid>/, `<uuid>${genUuid()}</uuid>`);
+    out += '\n\t' + unsSeq;
+  }
+  out += xmlTail;
+
+  writeFileSync(OUT, out, 'utf8');
+  console.log(`MAIN _SYNCED: ${synced} клипов, конец ${Math.round(syncedEndF * FRAME)}s`);
+  console.log(`UNSYNCED: ${unsynced} клипов, конец ${Math.round(unsyncedEndF * FRAME)}s ${hasUnsynced ? '(отдельная секвенция)' : '(нет)'} → ${OUT}`);
 }
 
 main().catch((e) => { console.error('ERROR:', e && e.stack || e); process.exit(1); });
