@@ -2,3 +2,8 @@ node_modules/
 *.log
 .DS_Store
 _*cache*.json
+
+# standalone test outputs
+tmp_*_synced.xml
+tmp_*_shifted.xml
+sync_premier_*.xml
