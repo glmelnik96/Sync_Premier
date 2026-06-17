@@ -1,139 +1,86 @@
 (function () {
   'use strict';
-  var TICKS_PER_SECOND = 254016000000;
+
+  var btn = document.getElementById('syncXml');
   var statusEl = document.getElementById('status');
-  var applyBtn = document.getElementById('apply');
-  var revertBtn = document.getElementById('revert');
-  var lastRows = [];
-  var backupSeqId = null;
+  var resultEl = document.getElementById('result');
 
-  function setStatus(s) { statusEl.textContent = s; }
-
-  function renderResults(rows) {
-    var html = rows.map(function (r, idx) {
-      return '<div class="clip-row status-' + r.status + '" data-idx="' + idx + '" style="cursor:pointer"><span>' +
-        r.name + ' (A' + (r.trackIndex + 1) + ')</span><span>' + (r.shiftSec * 1000).toFixed(0) +
-        'мс · ' + r.status + ' · ' + r.confidence.toFixed(2) + '</span></div>';
-    }).join('');
-    var resEl = document.getElementById('results');
-    resEl.innerHTML = html;
-    resEl.querySelectorAll('.clip-row').forEach(function (el) {
-      el.addEventListener('click', function () {
-        var r = lastRows[parseInt(el.getAttribute('data-idx'), 10)];
-        if (!r || !r.refSeg) return;
-        var shiftSamples = r.dtSec ? (r.shiftSec / r.dtSec) : 0;
-        window.SyncWaveform.drawPair(document.getElementById('wave'), r.refSeg, r.clipEnv, shiftSamples);
-      });
-    });
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = 'status' + (kind ? ' status-' + kind : '');
   }
-
-  function onAnalyzed(rows) {
-    lastRows = rows;
-    renderResults(rows);
-    applyBtn.disabled = rows.length === 0;
+  function setBusy(busy) {
+    btn.disabled = busy;
+    btn.textContent = busy ? 'Синхронизация…' : 'Синхронизировать';
   }
+  function showResult(html) { resultEl.innerHTML = html || ''; }
 
-  /* ГИБРИД-ПАЙПЛАЙН (FCP7 XML round-trip, БЕЗ move()):
-     host экспортирует секвенцию в XML → панель парсит, гоняет DSP, пишет синхро-XML
-     (две секвенции _SYNCED/_UNSYNCED) → host importFiles. Никакой мутации живого
-     таймлайна — Premiere строит свежие секвенции импортом. */
-  document.getElementById('syncXml').addEventListener('click', function () {
+  /* ГИБРИД-ПАЙПЛАЙН (FCP7 XML round-trip, БЕЗ мутации живого таймлайна):
+     host экспортирует активную секвенцию в FCP7 XML → панель парсит, гоняет DSP
+     (ffmpeg-огибающие + FFT-NCC + граф комнат), пишет синхро-XML (две секвенции
+     _SYNCED + опц. _UNSYNCED) → host importFiles → Premiere строит свежие секвенции.
+     Это снимает все проблемы move()-подхода (длительность, плейхед, развал). */
+  btn.addEventListener('click', function () {
     var T = window.FcpXmlTransform;
-    var fs; try { fs = require('fs'); } catch (e) { setStatus('Ошибка: Node fs недоступен (нужен <CEFCommandLine>)'); return; }
-    setStatus('Экспорт секвенции в XML…');
+    var fs;
+    try { fs = require('fs'); } catch (e) { setStatus('Node.js недоступен в панели (нужен --enable-nodejs)', 'error'); return; }
+
+    setBusy(true); showResult('');
+    setStatus('1/4 · Экспорт секвенции…', 'busy');
     window.PremiereBridge.exportActiveSequenceXml(function (err, exp) {
-      if (err || !exp || !exp.path) { setStatus('Ошибка экспорта: ' + (err ? err.message : 'нет пути')); return; }
+      if (err || !exp || !exp.path) { setStatus('Ошибка экспорта: ' + (err ? err.message : 'нет активной секвенции'), 'error'); setBusy(false); return; }
       var xml;
-      try { xml = fs.readFileSync(exp.path, 'utf8'); } catch (e2) { setStatus('Ошибка чтения XML: ' + e2.message); return; }
+      try { xml = fs.readFileSync(exp.path, 'utf8'); } catch (e2) { setStatus('Не удалось прочитать XML: ' + e2.message, 'error'); setBusy(false); return; }
+
       var rate = T.deriveRate(xml);
       var parsed = T.parseXml(xml);
-      setStatus('Секвенция «' + exp.seqName + '»: ' + parsed.clips.length + ' клипов, синхронизация (огибающие)…');
+      setStatus('2/4 · «' + exp.seqName + '»: анализ ' + parsed.clips.length + ' клипов (огибающие)…', 'busy');
+
       var snapshot = T.buildSnapshot(parsed.clips, rate.frameSec);
       window.SyncRunner.runClipSync(snapshot, { extractEnvelope: window.AudioEnvelope.extractEnvelope },
         { refGate: 0.45, clipGate: 0.4, coarseWindowMs: 20 })
         .then(function (rows) {
+          setStatus('3/4 · Сборка синхро-секвенции…', 'busy');
           var res = T.applySyncToXml(xml, parsed.clips, rows, { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame });
           var outPath = exp.path.replace(/sync_premier_in\.xml$/, 'sync_premier_out.xml');
           fs.writeFileSync(outPath, res.xml, 'utf8');
+
           var s = res.stats;
-          setStatus('Импорт синхро-секвенций (_SYNCED ' + s.syncedEndSec + 'с' + (s.hasUnsynced ? ', _UNSYNCED ' + s.unsynced + ' клипов' : '') + ')…');
+          setStatus('4/4 · Импорт в проект…', 'busy');
           window.PremiereBridge.importSyncedXml(outPath, function (e3, imp) {
-            if (e3 || !imp || !imp.ok) { setStatus('Ошибка импорта: ' + (e3 ? e3.message : 'importFiles=false')); return; }
-            var names = (imp.imported || []).map(function (x) { return x.name; }).join(', ');
-            setStatus('Готово ✓ Созданы секвенции: ' + names);
+            setBusy(false);
+            if (e3 || !imp || !imp.ok) { setStatus('Ошибка импорта: ' + (e3 ? e3.message : 'importFiles вернул false'), 'error'); return; }
+            var names = (imp.imported || []).map(function (x) { return x.name; });
+            setStatus('Готово ✓', 'ok');
+            renderSummary(s, names);
           });
         })
-        .catch(function (e4) { setStatus('Ошибка синхронизации: ' + e4.message); });
+        .catch(function (e4) { setStatus('Ошибка синхронизации: ' + e4.message, 'error'); setBusy(false); });
     });
   });
 
-  document.getElementById('analyze').addEventListener('click', function () {
-    setStatus('Чтение таймлайна…');
-    window.PremiereBridge.getTimelineSnapshot(function (err, snap) {
-      if (err) { setStatus('Ошибка: ' + err.message); return; }
-      setStatus('Секвенция: ' + snap.sequenceName + ' | per-clip синхронизация (извлечение огибающих)…');
-      /* Per-clip синхронизация (модель Syncaila): каждый клип матчится против
-         референсов-«часов», roaming-источники и комнаты разделяются автоматически. */
-      window.SyncRunner.runClipSync(snap, {
-        extractEnvelope: window.AudioEnvelope.extractEnvelope
-      }, { refGate: 0.45, clipGate: 0.4, coarseWindowMs: 20 })
-        .then(function (rows) {
-          onAnalyzed(rows);
-          var comps = {}; rows.forEach(function (r) { if (r.component >= 0) comps[r.component] = 1; });
-          setStatus('Готово: ' + rows.length + ' клипов, комнат: ' + Object.keys(comps).length);
-        })
-        .catch(function (e) { setStatus('Ошибка: ' + e.message); });
+  /* Итоговая сводка: что создано и что попало в несвязанные. */
+  function renderSummary(s, names) {
+    var rows = [];
+    names.forEach(function (n) {
+      var isUns = /_UNSYNCED$/.test(n);
+      rows.push('<div class="res-row">' +
+        '<span class="dot ' + (isUns ? 'dot-red' : 'dot-green') + '"></span>' +
+        '<b>' + n + '</b>' +
+        '<span class="muted">' + (isUns ? s.unsynced + ' клипов без связи' : s.synced + ' клипов · ' + fmtTime(s.syncedEndSec)) + '</span>' +
+        '</div>');
     });
-  });
+    var notes = [];
+    if (s.trimmedHeadSec > 1 || s.trimmedTailSec > 1) notes.push('Обрезано лишнего звука: ' + (s.trimmedHeadSec + s.trimmedTailSec) + 'с (стоп-кадры).');
+    if (s.hasUnsynced) notes.push('Несвязанные клипы — в отдельной секвенции _UNSYNCED (красные), разберите вручную.');
+    if (notes.length) rows.push('<div class="note">' + notes.join('<br>') + '</div>');
+    showResult(rows.join(''));
+  }
 
-  applyBtn.addEventListener('click', function () {
-    setStatus('Создаю checkpoint…');
-    window.PremiereBridge.backupActiveSequence(function (err, b) {
-      if (err) { setStatus('Ошибка backup: ' + err.message); return; }
-      backupSeqId = b.backupId;
-      revertBtn.disabled = !backupSeqId;
-      var toMove = lastRows.filter(function (r) { return r.status === 'sync' || r.status === 'drift'; });
-      var toEnd = lastRows.filter(function (r) { return r.status === 'unsynced'; });
-      var i = 0;
-      /* СИНХРОНИЗАЦИЯ: только сдвиг клипов (вместе со связанным A/V).
-         Ripple-закрытие пауз НЕ применяем — паузы между клипами в синхро-раскладке
-         осмысленны (камера не писала), уплотнение разрушило бы выравнивание. */
-      function finishUnsynced() {
-        /* Несвязанные клипы: сдвинуть в конец + красный label (нечего синхронизировать). */
-        var j = 0;
-        (function nextU() {
-          if (j >= toEnd.length) {
-            setStatus('Синхронизировано: ' + toMove.length + ', без связи (в конец): ' + toEnd.length + '. Обновление…');
-            window.PremiereBridge.refreshActiveSequence(function () {
-              setStatus('Готово. Синхронизировано: ' + toMove.length + ', без связи: ' + toEnd.length);
-            });
-            return;
-          }
-          var u = toEnd[j++];
-          window.PremiereBridge.moveClipTo(u.nodeId, Math.round(u.targetSec * TICKS_PER_SECOND), function () {
-            window.PremiereBridge.setClipLabel(u.nodeId, 6, function () {
-              setStatus('В конец ' + j + '/' + toEnd.length); nextU();
-            });
-          });
-        })();
-      }
-      (function next() {
-        if (i >= toMove.length) { finishUnsynced(); return; }
-        var r = toMove[i++];
-        window.PremiereBridge.moveClipTo(r.nodeId, Math.round(r.targetSec * TICKS_PER_SECOND), function (e) {
-          if (e) { setStatus('Ошибка moveClip: ' + e.message); return; }
-          setStatus('Сдвинуто ' + i + '/' + toMove.length); next();
-        });
-      })();
-    });
-  });
+  function fmtTime(sec) {
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+    return (h ? h + ':' : '') + (h ? ('0' + m).slice(-2) : m) + ':' + ('0' + x).slice(-2);
+  }
 
-  revertBtn.addEventListener('click', function () {
-    if (!backupSeqId) return;
-    window.PremiereBridge.activateSequenceById(backupSeqId, function (e) {
-      setStatus(e ? 'Ошибка отката: ' + e.message : 'Откат выполнен (активирован checkpoint)');
-    });
-  });
-
-  setStatus('Готово к анализу.');
+  setStatus('Откройте секвенцию и нажмите «Синхронизировать».');
 })();

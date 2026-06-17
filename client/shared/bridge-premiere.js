@@ -90,47 +90,6 @@
       });
     },
 
-    getTimelineSnapshot: function (cb) { this.evalJson('$._SYNC_.getTimelineSnapshot()', cb); },
-
-    getClipMediaPath: function (nodeId, cb) {
-      var s = String(nodeId).replace(/"/g, '\\"');
-      this.evalJson('$._SYNC_.getClipMediaPath("' + s + '")', cb);
-    },
-
-    moveClipTo: function (nodeId, targetTicks, cb) {
-      var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, targetTicks: targetTicks }));
-      this.evalJson('$._SYNC_.moveClip("' + json + '")', cb);
-    },
-
-    moveClip: function (nodeId, deltaTicks, cb) {
-      var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, deltaTicks: deltaTicks }));
-      this.evalJson('$._SYNC_.moveClip("' + json + '")', cb);
-    },
-
-    rippleCloseGaps: function (trackType, trackIndex, cb) {
-      var json = escapeDoubleQuoted(JSON.stringify({ trackType: trackType, trackIndex: trackIndex }));
-      this.evalJson('$._SYNC_.rippleCloseGaps("' + json + '")', cb);
-    },
-
-    setClipSpeed: function (nodeId, ratio, cb) {
-      var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, ratio: ratio }));
-      this.evalJson('$._SYNC_.setClipSpeed("' + json + '")', cb);
-    },
-
-    backupActiveSequence: function (cb) { this.evalJson('$._SYNC_.backupActiveSequence()', cb); },
-
-    activateSequenceById: function (seqId, cb) {
-      var s = String(seqId).replace(/"/g, '\\"');
-      this.evalJson('$._SYNC_.activateSequenceById("' + s + '")', cb);
-    },
-
-    refreshActiveSequence: function (cb) { this.evalJson('$._SYNC_.refreshActiveSequence()', cb); },
-
-    setClipLabel: function (nodeId, colorIndex, cb) {
-      var json = escapeDoubleQuoted(JSON.stringify({ nodeId: nodeId, colorIndex: colorIndex }));
-      this.evalJson('$._SYNC_.setClipLabel("' + json + '")', cb);
-    },
-
     /* export/import долгие (Premiere conform/parse) → таймаут 180с. */
     exportActiveSequenceXml: function (cb) { this.evalJson('$._SYNC_.exportActiveSequenceXml()', cb, 180000); },
 

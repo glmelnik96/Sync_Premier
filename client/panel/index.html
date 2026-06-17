@@ -6,17 +6,28 @@
 </head>
 <body>
   <div id="app">
-    <h1>ИИ: синхронизация</h1>
-    <button id="syncXml">Синхронизировать (XML)</button>
-    <button id="analyze">Анализировать таймлайн</button>
-    <div id="status"></div>
-    <div id="results"></div>
-    <canvas id="wave" width="456" height="120" style="margin-top:8px;background:#161616;width:100%"></canvas>
-    <div id="actions" style="margin-top:12px">
-      <button id="apply" disabled>Применить</button>
-      <button id="revert" disabled>Откатить</button>
-    </div>
+    <header>
+      <h1>ИИ: синхронизация</h1>
+      <p class="subtitle">Выравнивание многокамерного материала по звуку</p>
+    </header>
+
+    <button id="syncXml" class="primary">Синхронизировать</button>
+
+    <div id="status" class="status">Откройте секвенцию и нажмите «Синхронизировать».</div>
+    <div id="result" class="result"></div>
+
+    <details class="help">
+      <summary>Как это работает</summary>
+      <ol>
+        <li>Откройте секвенцию с исходными клипами (камеры + аудио-рекордеры).</li>
+        <li>Нажмите «Синхронизировать».</li>
+        <li>Плагин создаст новую секвенцию <b>…_SYNCED</b> с выровненным по звуку материалом.</li>
+        <li>Клипы без общего звука попадут в <b>…_UNSYNCED</b> (помечены красным).</li>
+      </ol>
+      <p class="muted">Исходная секвенция не изменяется — результат это новые секвенции.</p>
+    </details>
   </div>
+
   <script src="../lib/csinterface.js"></script>
   <script src="../shared/sync-core.js"></script>
   <script src="../shared/audio-envelope.js"></script>
@@ -24,7 +35,6 @@
   <script src="../shared/sync-graph.js"></script>
   <script src="../shared/sync-runner.js"></script>
   <script src="../shared/fcpxml-transform.js"></script>
-  <script src="../shared/sync-waveform.js"></script>
   <script src="../shared/bridge-premiere.js"></script>
   <script src="panel.js"></script>
 </body>

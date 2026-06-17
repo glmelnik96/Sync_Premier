@@ -1,7 +1,41 @@
-body { font-family: -apple-system, "Segoe UI", sans-serif; font-size: 13px; background: #1e1e1e; color: #ddd; margin: 0; padding: 12px; }
-h1 { font-size: 15px; margin: 0 0 12px; }
-button { background: #2d6cdf; color: #fff; border: 0; border-radius: 4px; padding: 8px 14px; cursor: pointer; }
-button:disabled { opacity: 0.5; cursor: default; }
-#status { margin: 10px 0; color: #9ad; min-height: 18px; }
-.clip-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #333; }
-.status-sync { color: #6c6; } .status-low-confidence { color: #c66; } .status-drift { color: #cc6; }
+body {
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px; background: #1e1e1e; color: #ddd; margin: 0; padding: 14px;
+}
+#app { max-width: 460px; }
+
+header { margin-bottom: 14px; }
+h1 { font-size: 15px; font-weight: 600; margin: 0; }
+.subtitle { font-size: 12px; color: #888; margin: 3px 0 0; }
+
+button.primary {
+  width: 100%; background: #2d6cdf; color: #fff; border: 0; border-radius: 5px;
+  padding: 11px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+button.primary:hover:not(:disabled) { background: #3a78e8; }
+button.primary:disabled { opacity: 0.55; cursor: default; }
+
+.status {
+  margin: 12px 0; padding: 9px 11px; border-radius: 5px; min-height: 18px;
+  background: #262626; color: #9ad; font-size: 12px; line-height: 1.4;
+}
+.status-busy { color: #d9b75a; background: #2a2620; }
+.status-ok { color: #6cc66c; background: #1f2a1f; }
+.status-error { color: #e06c6c; background: #2a1f1f; }
+
+.result { margin-top: 6px; }
+.res-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 9px;
+  border: 1px solid #333; border-radius: 5px; margin-bottom: 6px; background: #242424;
+}
+.res-row b { font-size: 12px; }
+.res-row .muted { margin-left: auto; color: #888; font-size: 11px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.dot-green { background: #5ac85a; }
+.dot-red { background: #e0564f; }
+.note { margin-top: 4px; padding: 8px 10px; font-size: 11px; color: #aaa; background: #222; border-radius: 5px; line-height: 1.5; }
+
+.help { margin-top: 16px; font-size: 12px; color: #aaa; }
+.help summary { cursor: pointer; color: #888; user-select: none; }
+.help ol { margin: 8px 0; padding-left: 18px; line-height: 1.6; }
+.help .muted { color: #777; font-size: 11px; }
