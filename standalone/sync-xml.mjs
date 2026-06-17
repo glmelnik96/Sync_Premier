@@ -28,9 +28,9 @@ async function main() {
   const res = T.applySyncToXml(xml, clips, rows, { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame });
   writeFileSync(OUT, res.xml, 'utf8');
   const s = res.stats;
-  console.log(`trim head=${s.trimmedHeadSec}s tail=${s.trimmedTailSec}s dropped=${s.dropped}`);
-  console.log(`MAIN _SYNCED: ${s.synced} клипов, конец ${s.syncedEndSec}s`);
-  console.log(`UNSYNCED: ${s.unsynced} клипов, конец ${s.unsyncedEndSec}s ${s.hasUnsynced ? '(отдельная секвенция)' : '(нет)'} → ${OUT}`);
+  console.log(`_SYNCED: ${s.synced} клипов синхронно (0–${s.syncedEndSec}s)` +
+    (s.hasUnsynced ? `, ${s.unsynced} без связи в конце (красные, до ${s.unsyncedEndSec}s)` : '') +
+    ` → ${OUT}`);
 }
 
 main().catch((e) => { console.error('ERROR:', e && e.stack || e); process.exit(1); });

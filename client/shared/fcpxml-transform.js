@@ -69,8 +69,6 @@
     }) };
   }
 
-  function med(a) { var b = a.slice().sort(function (p, q) { return p - q; }); return b[Math.floor(b.length / 2)]; }
-  function genUuid() { var h = function () { return Math.floor(Math.random() * 16).toString(16); }; var s = ''; for (var i = 0; i < 32; i++) s += (i === 8 || i === 12 || i === 16 || i === 20) ? '-' + h() : h(); return s; }
 
   /**
    * Применить результаты синхронизации (rows из runClipSync) к XML.
@@ -84,75 +82,60 @@
     var TPF = opt.ticksPerFrame || rate.ticksPerFrame;
     var origName = opt.baseName || (xml.match(/<name>([^<]*)<\/name>/) || [])[1] || 'sync';
 
+    /* МОДЕЛЬ Syncaila: НИКАКОЙ обрезки клипов. Каждый клип ставится на свою синхро-позицию
+       в ПОЛНУЮ длину (in/out источника НЕ трогаем). Всё в ОДНОЙ непрерывной секвенции.
+       Несвязанные клипы — вплотную в конец (без зазора → Premiere не обрезает воспр.),
+       помечены красным. Прошлые «улучшения» (обрезка lone-аудио, 2 секвенции, drop) были
+       причиной невалидного вывода: клипы пропадали и резались неправильно. */
     var planByKey = {}, clipById = {};
     for (var i = 0; i < clips.length; i++) clipById[clips[i].id] = clips[i];
     function keyOf(path, sf) { return path + '|' + sf; }
     for (var r = 0; r < rows.length; r++) {
       var c0 = clipById[rows[r].nodeId]; if (!c0) continue;
       planByKey[keyOf(c0.path, c0.start)] = {
-        targetFrames: Math.max(0, Math.round(rows[r].targetSec / FRAME)),
+        targetFrames: Math.round(rows[r].targetSec / FRAME),
         status: rows[r].status, comp: rows[r].component
       };
     }
 
-    // Фаза 1: план каждого clipitem
+    // план каждого clipitem: позиция = targetFrames; in/out = ОРИГИНАЛ (полная длина).
     for (var a = 0; a < clips.length; a++) {
       var c = clips[a], p = planByKey[keyOf(c.path, c.start)];
       if (!p) { c.plan = null; continue; }
       var dur = c.end - c.start;
-      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, inP: c.inP, out: c.out,
-        comp: p.comp, status: p.status, drop: false };
+      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp };
     }
 
-    // Фаза 2: покрытие видео по комнатам
-    var vCover = {};
-    for (var b = 0; b < clips.length; b++) {
-      var cv = clips[b]; if (cv.type !== 'video' || !cv.plan || cv.plan.status === 'unsynced') continue;
-      var kc = cv.plan.comp;
-      if (!vCover[kc]) vCover[kc] = { vs: cv.plan.start, ve: cv.plan.end };
-      else { if (cv.plan.start < vCover[kc].vs) vCover[kc].vs = cv.plan.start; if (cv.plan.end > vCover[kc].ve) vCover[kc].ve = cv.plan.end; }
-    }
-
-    // Фаза 3: обрезать lone-аудио до покрытия видео своей комнаты (in/out тоже)
-    var trimmedHead = 0, trimmedTail = 0, dropped = 0;
-    for (var d = 0; d < clips.length; d++) {
-      var ca = clips[d]; if (ca.type !== 'audio' || !ca.plan || ca.plan.status === 'unsynced') continue;
-      var cov = vCover[ca.plan.comp]; if (!cov) continue;
-      if (ca.plan.start < cov.vs) { var dh = cov.vs - ca.plan.start; ca.plan.start += dh; ca.plan.inP += dh; trimmedHead += dh; }
-      if (ca.plan.end > cov.ve) { var dt = ca.plan.end - cov.ve; ca.plan.end -= dt; ca.plan.out -= dt; trimmedTail += dt; }
-      if (ca.plan.end <= ca.plan.start) { ca.plan.drop = true; dropped++; }
-    }
-
-    // Фаза 5: сдвиг синхронных к 0
+    // синхронные → сдвиг так, чтобы самый ранний встал в 0
     var gmin = null;
-    for (var e = 0; e < clips.length; e++) { var ce = clips[e]; if (ce.plan && !ce.plan.drop && ce.plan.status !== 'unsynced') { if (gmin === null || ce.plan.start < gmin) gmin = ce.plan.start; } }
+    for (var e = 0; e < clips.length; e++) { var ce = clips[e]; if (ce.plan && ce.plan.status !== 'unsynced') { if (gmin === null || ce.plan.start < gmin) gmin = ce.plan.start; } }
     if (gmin === null) gmin = 0;
-    for (var f = 0; f < clips.length; f++) { var cf = clips[f]; if (cf.plan && !cf.plan.drop && cf.plan.status !== 'unsynced') { cf.plan.start -= gmin; cf.plan.end -= gmin; } }
+    for (var f = 0; f < clips.length; f++) { var cf = clips[f]; if (cf.plan && cf.plan.status !== 'unsynced') { cf.plan.start -= gmin; cf.plan.end -= gmin; } }
 
-    // несвязанные → minStart для сдвига к 0 в своей секвенции
+    // конец синхронного контента
+    var syncedEndF = 0;
+    for (var s2 = 0; s2 < clips.length; s2++) { var cs = clips[s2]; if (cs.plan && cs.plan.status !== 'unsynced' && cs.plan.end > syncedEndF) syncedEndF = cs.plan.end; }
+
+    // несвязанные → ВПЛОТНУЮ в конец (без зазора), сохраняя взаимное расположение групп
     var umin = null;
-    for (var g = 0; g < clips.length; g++) { var cg = clips[g]; if (cg.plan && !cg.plan.drop && cg.plan.status === 'unsynced') { if (umin === null || cg.plan.start < umin) umin = cg.plan.start; } }
-    if (umin === null) umin = 0;
+    for (var g = 0; g < clips.length; g++) { var cg = clips[g]; if (cg.plan && cg.plan.status === 'unsynced') { if (umin === null || cg.plan.start < umin) umin = cg.plan.start; } }
+    var unsyncedShift = (umin === null) ? 0 : (syncedEndF - umin);
+    for (var h = 0; h < clips.length; h++) { var ch = clips[h]; if (ch.plan && ch.plan.status === 'unsynced') { ch.plan.start += unsyncedShift; ch.plan.end += unsyncedShift; } }
 
-    // Фаза 6: собрать ДВЕ секвенции
-    var synced = 0, unsynced = 0, syncedEndF = 0, unsyncedEndF = 0;
-    function renderClip(c, mode) {
-      if (!c.plan || c.plan.drop) return '';
-      var isUns = c.plan.status === 'unsynced';
-      if (mode === 'synced' && isUns) return '';
-      if (mode === 'unsynced' && !isUns) return '';
-      var s = c.plan.start, en = c.plan.end;
-      if (mode === 'unsynced') { s -= umin; en -= umin; }
+    // собрать ОДНУ секвенцию
+    var synced = 0, unsynced = 0, endF = 0;
+    function renderClip(c) {
+      if (!c.plan) return '';
+      var s = c.plan.start < 0 ? 0 : c.plan.start;
+      var en = c.plan.end - (c.plan.start < 0 ? c.plan.start : 0);
       var block = c.fullMatch
         .replace(/<start>-?\d+<\/start>/, '<start>' + s + '</start>')
-        .replace(/<end>-?\d+<\/end>/, '<end>' + en + '</end>')
-        .replace(/<in>-?\d+<\/in>/, '<in>' + c.plan.inP + '</in>')
-        .replace(/<out>-?\d+<\/out>/, '<out>' + c.plan.out + '</out>')
-        .replace(/<pproTicksIn>-?\d+<\/pproTicksIn>/, '<pproTicksIn>' + (c.plan.inP * TPF) + '</pproTicksIn>')
-        .replace(/<pproTicksOut>-?\d+<\/pproTicksOut>/, '<pproTicksOut>' + (c.plan.out * TPF) + '</pproTicksOut>');
-      if (isUns) block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
-      if (mode === 'synced') { synced++; if (en > syncedEndF) syncedEndF = en; }
-      else { unsynced++; if (en > unsyncedEndF) unsyncedEndF = en; }
+        .replace(/<end>-?\d+<\/end>/, '<end>' + en + '</end>');
+      if (c.plan.status === 'unsynced') {
+        block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
+        unsynced++;
+      } else synced++;
+      if (en > endF) endF = en;
       return block;
     }
 
@@ -162,43 +145,24 @@
     var xmlHead = xml.slice(0, seqM.index);
     var xmlTail = xml.slice(seqM.index + seqTemplate.length);
 
-    function fixSeqHead(blk, endFrames) {
-      var endTicks = endFrames * TPF;
-      blk = blk.replace(/(<sequence\b[^>]*?)>/, function (full, h) {
-        h = h.replace(/MZ\.EditLine="[0-9]+"/, 'MZ.EditLine="0"');
-        h = h.replace(/MZ\.WorkInPoint="[0-9]+"/, 'MZ.WorkInPoint="0"');
-        h = h.replace(/MZ\.WorkOutPoint="[0-9]+"/, 'MZ.WorkOutPoint="' + endTicks + '"');
-        h = h.replace(/Monitor\.ProgramZoomOut="[0-9]+"/, 'Monitor.ProgramZoomOut="' + endTicks + '"');
-        h = h.replace(/Monitor\.ProgramZoomIn="[0-9]+"/, 'Monitor.ProgramZoomIn="0"');
-        return h + '>';
-      });
-      return blk.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, '$1' + endFrames + '$2');
-    }
+    var blk = seqTemplate;
+    for (var b2 = 0; b2 < clips.length; b2++) { var rep = renderClip(clips[b2]); if (rep !== clips[b2].fullMatch) blk = blk.replace(clips[b2].fullMatch, rep); }
+    blk = blk.replace(/<name>([^<]*)<\/name>/, function (m, n) { return '<name>' + n + '_SYNCED</name>'; });
+    var endTicks = endF * TPF;
+    blk = blk.replace(/(<sequence\b[^>]*?)>/, function (full, hh) {
+      hh = hh.replace(/MZ\.EditLine="[0-9]+"/, 'MZ.EditLine="0"');
+      hh = hh.replace(/MZ\.WorkInPoint="[0-9]+"/, 'MZ.WorkInPoint="0"');
+      hh = hh.replace(/MZ\.WorkOutPoint="[0-9]+"/, 'MZ.WorkOutPoint="' + endTicks + '"');
+      hh = hh.replace(/Monitor\.ProgramZoomOut="[0-9]+"/, 'Monitor.ProgramZoomOut="' + endTicks + '"');
+      hh = hh.replace(/Monitor\.ProgramZoomIn="[0-9]+"/, 'Monitor.ProgramZoomIn="0"');
+      return hh + '>';
+    });
+    blk = blk.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, '$1' + endF + '$2');
 
-    function buildSeq(mode, nameSuffix) {
-      var blk = seqTemplate;
-      for (var i = 0; i < clips.length; i++) { var rep = renderClip(clips[i], mode); if (rep !== clips[i].fullMatch) blk = blk.replace(clips[i].fullMatch, rep); }
-      blk = blk.replace(/<name>([^<]*)<\/name>/, function (m, n) { return '<name>' + n + nameSuffix + '</name>'; });
-      return blk;
-    }
-
-    var mainSeq = fixSeqHead(buildSeq('synced', '_SYNCED'), syncedEndF);
-    var out = xmlHead + mainSeq;
-    var hasUnsynced = false;
-    for (var u = 0; u < clips.length; u++) if (clips[u].plan && !clips[u].plan.drop && clips[u].plan.status === 'unsynced') { hasUnsynced = true; break; }
-    if (hasUnsynced) {
-      var unsSeq = fixSeqHead(buildSeq('unsynced', '_UNSYNCED'), unsyncedEndF)
-        .replace(/<uuid>[^<]*<\/uuid>/, '<uuid>' + genUuid() + '</uuid>')
-        .replace(/<sequence id="sequence-1"/, '<sequence id="sequence-2"')
-        .replace(/(id=")(clipitem|file|masterclip)-(\d+)(")/g, '$1$2-u$3$4')
-        .replace(/(<(?:masterclipid|linkclipref)>)(clipitem|masterclip)-(\d+)(<)/g, '$1$2-u$3$4');
-      out += '\n\t' + unsSeq;
-    }
-    out += xmlTail;
-
-    return { xml: out, stats: { synced: synced, unsynced: unsynced, syncedEndSec: Math.round(syncedEndF * FRAME),
-      unsyncedEndSec: Math.round(unsyncedEndF * FRAME), trimmedHeadSec: Math.round(trimmedHead * FRAME),
-      trimmedTailSec: Math.round(trimmedTail * FRAME), dropped: dropped, hasUnsynced: hasUnsynced } };
+    var out = xmlHead + blk + xmlTail;
+    return { xml: out, stats: { synced: synced, unsynced: unsynced,
+      syncedEndSec: Math.round(syncedEndF * FRAME), unsyncedEndSec: Math.round(endF * FRAME),
+      trimmedHeadSec: 0, trimmedTailSec: 0, dropped: 0, hasUnsynced: unsynced > 0 } };
   }
 
   global.FcpXmlTransform = {

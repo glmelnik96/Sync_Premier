@@ -71,8 +71,7 @@
         '</div>');
     });
     var notes = [];
-    if (s.trimmedHeadSec > 1 || s.trimmedTailSec > 1) notes.push('Обрезано лишнего звука: ' + (s.trimmedHeadSec + s.trimmedTailSec) + 'с (стоп-кадры).');
-    if (s.hasUnsynced) notes.push('Несвязанные клипы — в отдельной секвенции _UNSYNCED (красные), разберите вручную.');
+    if (s.hasUnsynced) notes.push(s.unsynced + ' клипов без общего звука — в конце секвенции, помечены красным. Разберите вручную.');
     if (notes.length) rows.push('<div class="note">' + notes.join('<br>') + '</div>');
     showResult(rows.join(''));
   }
