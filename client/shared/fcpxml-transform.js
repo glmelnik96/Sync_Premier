@@ -145,42 +145,29 @@
       if (!devGroups[tid]) devGroups[tid] = [];
       devGroups[tid].push({ key: dk, tcStart: d.tcStart, durFrames: d.durFrames, plan: planByKey[dk] });
     }
-    /* ГИБРИД (как Syncaila): СИЛЬНЫЕ файлы (anchorCorr≥strongThr) держим на их АУДИО-позиции
-       (надёжно). СЛАБЫЕ — по timecode от ближайшего СИЛЬНОГО соседа (локальный клок). Это
-       устойчиво к РАЗРЫВАМ timecode камеры (клок прыгает между сессиями): локальная дельта
-       от соседа верна даже при прыжках, а аудио-ошибки слабых файлов не ломают раскладку. */
-    var strongThr = 0.62;
+    /* УСТРОЙСТВО = ЖЁСТКАЯ TIMECODE-ШКАЛА (модель Syncaila). Все файлы камеры — на ОДНОМ
+       клоке: их взаимное положение задаётся ТОЛЬКО timecode (сохраняет РЕАЛЬНЫЕ паузы между
+       записями — камера снимала 107 мин с паузами!). К миру устройство привязывается ОДНИМ
+       якорем: файлом с МАКС реальной корреляцией к комнате (anchorCorr). Аудио-позиции
+       отдельных файлов НЕ используем (короткий файл неоднозначно коррелирует с длинным
+       рекордером → кластеризация и схлопывание пауз — была причина «таймлайн поломан»). */
     var rescued = 0;
     for (var tg in devGroups) if (devGroups.hasOwnProperty(tg)) {
       var files = devGroups[tg]; if (files.length < 2) continue; /* одиночный файл — оставляем аудио */
-      files.sort(function (x, y) { return x.tcStart - y.tcStart; }); /* по timecode */
-      var hasStrong = false;
+      /* якорь = файл с макс anchorCorr (реальная связь с комнатой, не self-match) */
+      var anchor = null;
       for (var fi = 0; fi < files.length; fi++) {
-        if (files[fi].plan.status !== 'unsynced' && (files[fi].plan.anchorCorr || 0) >= strongThr) { files[fi].strong = true; hasStrong = true; }
-        else files[fi].strong = false;
+        var fp = files[fi]; if (fp.plan.status === 'unsynced') continue;
+        if (!anchor || (fp.plan.anchorCorr || 0) > (anchor.plan.anchorCorr || 0)) anchor = fp;
       }
-      if (!hasStrong) continue; /* нет ни одного надёжного файла — оставляем как есть */
+      if (!anchor) continue; /* нет надёжного аудио-якоря — оставляем как есть */
       for (var pj = 0; pj < files.length; pj++) {
-        var m = files[pj]; if (m.strong) continue; /* сильный держим на аудио-позиции */
-        /* ближайший сильный сосед по timecode */
-        var best = null, bestD = Infinity;
-        for (var nb = 0; nb < files.length; nb++) {
-          if (!files[nb].strong) continue;
-          var dd = Math.abs(files[nb].tcStart - m.tcStart);
-          if (dd < bestD) { bestD = dd; best = files[nb]; }
-        }
-        var newT = best.plan.targetFrames + Math.round((m.tcStart - best.tcStart) / FRAME);
+        var m = files[pj];
+        /* позиция = позиция якоря + дельта timecode (жёсткая шкала устройства) */
+        m.plan.targetFrames = anchor.plan.targetFrames + Math.round((m.tcStart - anchor.tcStart) / FRAME);
         if (m.plan.status === 'unsynced') rescued++;
-        m.plan.targetFrames = newT;
         m.plan.status = 'sync';
-        m.plan.comp = best.plan.comp;
-      }
-      /* защита от наложений на дорожке: упорядочить по позиции, сдвинуть перекрытия вправо */
-      var ordered = files.slice().sort(function (x, y) { return x.plan.targetFrames - y.plan.targetFrames; });
-      for (var oi = 1; oi < ordered.length; oi++) {
-        var prev = ordered[oi - 1], cur = ordered[oi];
-        var prevEnd = prev.plan.targetFrames + (prev.durFrames || 0);
-        if (cur.plan.targetFrames < prevEnd) cur.plan.targetFrames = prevEnd;
+        m.plan.comp = anchor.plan.comp;
       }
     }
 
