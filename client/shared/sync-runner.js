@@ -338,6 +338,19 @@
         for (var mk = 0; mk < mem.length; mk++) refInfo[mem[mk]] = { clockId: rid, off: offToRoot(mem[mk]), connected: conn };
         rid++;
       }
+      /* НАДЁЖНОСТЬ ПРИВЯЗКИ единицы к комнате = макс. реальная corr к другой единице ТОЙ ЖЕ
+         комнаты (из попарных рёбер). Нужна для выбора device-анкора: камера из многих файлов
+         должна якориться файлом с СИЛЬНОЙ корреляцией к рекордеру, а не случайным (self-match
+         даёт 1.0 у всех → выбор вслепую → вся камера могла уехать). */
+      var unitRoomCorr = {};
+      for (var uc = 0; uc < units.length; uc++) unitRoomCorr[units[uc].key] = 0;
+      for (var up = 0; up < unitPairs.length; up++) {
+        var ep = unitPairs[up];
+        if (refInfo[ep.a] && refInfo[ep.b] && refInfo[ep.a].clockId === refInfo[ep.b].clockId) {
+          if (ep.corr > unitRoomCorr[ep.a]) unitRoomCorr[ep.a] = ep.corr;
+          if (ep.corr > unitRoomCorr[ep.b]) unitRoomCorr[ep.b] = ep.corr;
+        }
+      }
 
       /* 4. каждый клип → лучшая по корреляции единица → позиция в часах её комнаты */
       var clips = (snapshot.clips || []).filter(function (c) { return c.trackType === 'audio' && c.mediaPath; });
@@ -405,16 +418,17 @@
         var rows = [];
         for (var n = 0; n < matched.length; n++) {
           var x2 = matched[n], c2 = x2.clip;
+          var aCorr = (x2.best && unitRoomCorr[x2.best.unitKey] != null) ? unitRoomCorr[x2.best.unitKey] : 0;
           if (x2.connected) {
             var target = roomStart[x2.clockId] + (x2.roomTarget - minByClock[x2.clockId]);
             if (target < 0) target = 0;
             rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex, mediaPath: c2.mediaPath,
               shiftSec: target - c2.startSec, targetSec: target, confidence: x2.best ? x2.best.corr : 0,
-              component: x2.clockId, slope: 0, status: 'sync' });
+              anchorCorr: aCorr, component: x2.clockId, slope: 0, status: 'sync' });
           } else {
             rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex, mediaPath: c2.mediaPath,
               shiftSec: x2.endTarget - c2.startSec, targetSec: x2.endTarget, confidence: x2.best ? x2.best.corr : 0,
-              component: -1, slope: 0, status: 'unsynced' });
+              anchorCorr: aCorr, component: -1, slope: 0, status: 'unsynced' });
           }
         }
         return rows;

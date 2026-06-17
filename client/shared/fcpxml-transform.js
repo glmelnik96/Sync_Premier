@@ -119,7 +119,8 @@
       var c0 = clipById[rows[r].nodeId]; if (!c0) continue;
       planByKey[keyOf(c0.path, c0.start)] = {
         targetFrames: Math.round(rows[r].targetSec / FRAME),
-        status: rows[r].status, comp: rows[r].component, conf: rows[r].confidence || 0
+        status: rows[r].status, comp: rows[r].component,
+        conf: rows[r].confidence || 0, anchorCorr: rows[r].anchorCorr || 0
       };
     }
 
@@ -128,39 +129,58 @@
        дорожку — это одно устройство с ОБЩИМ клоком. Если синхронизировать каждый файл
        НЕЗАВИСИМО по звуку, мелкие ошибки дают НАЛОЖЕНИЯ на дорожке → Premiere выкидывает
        перекрытые клипы (клипы «пропадают»). Решение: всё устройство привязывается к миру
-       ОДНИМ лучшим аудио-якорем, остальные файлы ставятся по дельте timecode относительно
-       него. timecode'ы файлов не пересекаются → наложений нет. Так делает Syncaila. */
-    var devByKey = {}; /* planKey → {tcStart, trackId} (видео-дорожка приоритетна) */
+       ОДНИМ файлом с САМОЙ СИЛЬНОЙ реальной корреляцией к комнате (anchorCorr — НЕ self-match),
+       остальные файлы ставятся по дельте timecode относительно него. timecode'ы файлов не
+       пересекаются → наложений нет. Так делает Syncaila. */
+    var devByKey = {}; /* planKey → {tcStart, trackId, durFrames} (видео-дорожка приоритетна) */
     for (var sa = 0; sa < clips.length; sa++) {
       var sc = clips[sa]; if (sc.tcStartSec == null) continue;
       var sk = keyOf(sc.path, sc.start); if (!planByKey[sk]) continue;
-      if (!devByKey[sk]) devByKey[sk] = { tcStart: sc.tcStartSec, trackId: sc.trackId };
+      if (!devByKey[sk]) devByKey[sk] = { tcStart: sc.tcStartSec, trackId: sc.trackId, durFrames: sc.end - sc.start };
       else if (sc.type === 'video') devByKey[sk].trackId = sc.trackId; /* предпочесть видео-дорожку */
     }
-    var devGroups = {}; /* trackId → [{key, tcStart, plan}] */
+    var devGroups = {}; /* trackId → [{key, tcStart, durFrames, plan}] */
     for (var dk in devByKey) if (devByKey.hasOwnProperty(dk)) {
       var d = devByKey[dk], tid = d.trackId;
       if (!devGroups[tid]) devGroups[tid] = [];
-      devGroups[tid].push({ key: dk, tcStart: d.tcStart, plan: planByKey[dk] });
+      devGroups[tid].push({ key: dk, tcStart: d.tcStart, durFrames: d.durFrames, plan: planByKey[dk] });
     }
+    /* ГИБРИД (как Syncaila): СИЛЬНЫЕ файлы (anchorCorr≥strongThr) держим на их АУДИО-позиции
+       (надёжно). СЛАБЫЕ — по timecode от ближайшего СИЛЬНОГО соседа (локальный клок). Это
+       устойчиво к РАЗРЫВАМ timecode камеры (клок прыгает между сессиями): локальная дельта
+       от соседа верна даже при прыжках, а аудио-ошибки слабых файлов не ломают раскладку. */
+    var strongThr = 0.62;
     var rescued = 0;
     for (var tg in devGroups) if (devGroups.hasOwnProperty(tg)) {
       var files = devGroups[tg]; if (files.length < 2) continue; /* одиночный файл — оставляем аудио */
-      var anchor = null;
+      files.sort(function (x, y) { return x.tcStart - y.tcStart; }); /* по timecode */
+      var hasStrong = false;
       for (var fi = 0; fi < files.length; fi++) {
-        var fp = files[fi]; if (fp.plan.status === 'unsynced') continue;
-        if (!anchor || fp.plan.conf > anchor.plan.conf) anchor = fp;
+        if (files[fi].plan.status !== 'unsynced' && (files[fi].plan.anchorCorr || 0) >= strongThr) { files[fi].strong = true; hasStrong = true; }
+        else files[fi].strong = false;
       }
-      if (!anchor) continue; /* у устройства нет надёжного аудио-якоря — оставляем как есть */
+      if (!hasStrong) continue; /* нет ни одного надёжного файла — оставляем как есть */
       for (var pj = 0; pj < files.length; pj++) {
-        var m = files[pj];
-        var newT = anchor.plan.targetFrames + Math.round((m.tcStart - anchor.tcStart) / FRAME);
-        if (m.plan.status === 'unsynced' || m.plan.targetFrames !== newT) {
-          if (m.plan.status === 'unsynced') rescued++;
-          m.plan.targetFrames = newT;
-          m.plan.status = 'sync';
-          m.plan.comp = anchor.plan.comp;
+        var m = files[pj]; if (m.strong) continue; /* сильный держим на аудио-позиции */
+        /* ближайший сильный сосед по timecode */
+        var best = null, bestD = Infinity;
+        for (var nb = 0; nb < files.length; nb++) {
+          if (!files[nb].strong) continue;
+          var dd = Math.abs(files[nb].tcStart - m.tcStart);
+          if (dd < bestD) { bestD = dd; best = files[nb]; }
         }
+        var newT = best.plan.targetFrames + Math.round((m.tcStart - best.tcStart) / FRAME);
+        if (m.plan.status === 'unsynced') rescued++;
+        m.plan.targetFrames = newT;
+        m.plan.status = 'sync';
+        m.plan.comp = best.plan.comp;
+      }
+      /* защита от наложений на дорожке: упорядочить по позиции, сдвинуть перекрытия вправо */
+      var ordered = files.slice().sort(function (x, y) { return x.plan.targetFrames - y.plan.targetFrames; });
+      for (var oi = 1; oi < ordered.length; oi++) {
+        var prev = ordered[oi - 1], cur = ordered[oi];
+        var prevEnd = prev.plan.targetFrames + (prev.durFrames || 0);
+        if (cur.plan.targetFrames < prevEnd) cur.plan.targetFrames = prevEnd;
       }
     }
 
