@@ -317,7 +317,7 @@
     var out = xmlHead + wrapped + xmlTail;
     return { xml: out, stats: { synced: synced, unsynced: unsynced, tcRescued: rescued,
       syncedEndSec: Math.round(syncedEndF * FRAME), unsyncedEndSec: Math.round(endF * FRAME),
-      trimmedHeadSec: 0, trimmedTailSec: 0, dropped: 0, hasUnsynced: unsynced > 0 } };
+      hasUnsynced: unsynced > 0 } };
   }
 
   global.FcpXmlTransform = {

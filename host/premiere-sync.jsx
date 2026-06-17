@@ -25,7 +25,7 @@ $._SYNC_.exportActiveSequenceXml = function () {
   }
 };
 
-/** Импорт синхро-XML (создаёт _SYNCED [+ _UNSYNCED] секвенции). paramsJson: {path}. */
+/** Импорт синхро-XML (создаёт секвенцию _SYNCED). paramsJson: {path}. */
 $._SYNC_.importSyncedXml = function (paramsJson) {
   try {
     var p = JSON.parse(paramsJson);

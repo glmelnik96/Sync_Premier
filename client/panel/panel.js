@@ -59,15 +59,14 @@
     });
   });
 
-  /* Итоговая сводка: что создано и что попало в несвязанные. */
+  /* Итоговая сводка: созданная секвенция + заметки о timecode/несвязанных. */
   function renderSummary(s, names) {
     var rows = [];
     names.forEach(function (n) {
-      var isUns = /_UNSYNCED$/.test(n);
       rows.push('<div class="res-row">' +
-        '<span class="dot ' + (isUns ? 'dot-red' : 'dot-green') + '"></span>' +
+        '<span class="dot dot-green"></span>' +
         '<b>' + n + '</b>' +
-        '<span class="muted">' + (isUns ? s.unsynced + ' клипов без связи' : s.synced + ' клипов · ' + fmtTime(s.syncedEndSec)) + '</span>' +
+        '<span class="muted">' + s.synced + ' клипов · ' + fmtTime(s.syncedEndSec) + '</span>' +
         '</div>');
     });
     var notes = [];
