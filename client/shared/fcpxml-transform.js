@@ -22,27 +22,15 @@
     return s;
   }
 
-  function rateOf(tb, ntsc) {
-    var frameSec = ntsc ? (1001 / (tb * 1000)) : (1 / tb);
-    return { frameSec: frameSec, ticksPerFrame: Math.round(SECOND_TICKS * frameSec), timebase: tb, ntsc: ntsc };
-  }
-  /** FPS ВЫХОДНОЙ секвенции = доминирующий FPS МЕДИА-файлов (как Syncaila «match media FPS»),
-      а НЕ fps исходной секвенции. Иначе 25fps-файл в 30fps-таймлайне играет 1.2× быстро
-      (рассинхрон/неверная скорость). Если медиа-fps определить нельзя — берём fps секвенции. */
+  /** timebase/ntsc первой <rate> секвенции → {frameSec, ticksPerFrame}. */
   function deriveRate(xml) {
-    var counts = {}; var fre = /<file id="[^"]+"\s*>([\s\S]*?)<\/file>/g, fm;
-    while ((fm = fre.exec(xml))) {
-      var rm = fm[1].match(/<rate>\s*<timebase>(\d+)<\/timebase>\s*<ntsc>(TRUE|FALSE)<\/ntsc>/i);
-      if (rm) { var k = rm[1] + '|' + (/TRUE/i.test(rm[2]) ? 1 : 0); counts[k] = (counts[k] || 0) + 1; }
-    }
-    var bestK = null, bestN = 0;
-    for (var k2 in counts) if (counts.hasOwnProperty(k2) && counts[k2] > bestN) { bestN = counts[k2]; bestK = k2; }
-    if (bestK) { var p = bestK.split('|'); return rateOf(parseInt(p[0], 10), p[1] === '1'); }
-    /* фолбэк: fps секвенции */
     var seqHead = xml.slice(0, xml.indexOf('<media>') >= 0 ? xml.indexOf('<media>') : xml.length);
     var tbM = seqHead.match(/<timebase>(\d+)<\/timebase>/);
     var ntscM = seqHead.match(/<ntsc>(TRUE|FALSE)<\/ntsc>/i);
-    return rateOf(tbM ? parseInt(tbM[1], 10) : 24, ntscM ? /TRUE/i.test(ntscM[1]) : true);
+    var tb = tbM ? parseInt(tbM[1], 10) : 24;
+    var ntsc = ntscM ? /TRUE/i.test(ntscM[1]) : true;
+    var frameSec = ntsc ? (1001 / (tb * 1000)) : (1 / tb);
+    return { frameSec: frameSec, ticksPerFrame: Math.round(SECOND_TICKS * frameSec), timebase: tb, ntsc: ntsc };
   }
 
   /** Парс xmeml → {clips:[{id,start,end,inP,out,path,name,type,fullMatch, tcFrame,tcRateSec,srcDurFrames}]}.
@@ -269,11 +257,6 @@
     var blk = seqTemplate;
     for (var b2 = 0; b2 < clips.length; b2++) { var rep = renderClip(clips[b2]); if (rep !== clips[b2].fullMatch) blk = blk.replace(clips[b2].fullMatch, rep); }
     blk = blk.replace(/<name>([^<]*)<\/name>/, function (m, n) { return '<name>' + n + '_SYNCED</name>'; });
-    /* FPS секвенции → FPS медиа (как Syncaila). Переписываем ПЕРВЫЙ <rate> (уровень секвенции,
-       между <duration> и <name>) + samplecharacteristics<rate> формата. Кадры клипов —
-       нативные (media fps), поэтому в media-fps таймлайне длительности и скорость верны. */
-    var seqRate = '<rate>\n\t\t\t<timebase>' + rate.timebase + '</timebase>\n\t\t\t<ntsc>' + (rate.ntsc ? 'TRUE' : 'FALSE') + '</ntsc>\n\t\t</rate>';
-    blk = blk.replace(/<rate>\s*<timebase>\d+<\/timebase>\s*<ntsc>(?:TRUE|FALSE)<\/ntsc>\s*<\/rate>/i, seqRate);
     var endTicks = endF * TPF;
     blk = blk.replace(/(<sequence\b[^>]*?)>/, function (full, hh) {
       hh = hh.replace(/MZ\.EditLine="[0-9]+"/, 'MZ.EditLine="0"');
