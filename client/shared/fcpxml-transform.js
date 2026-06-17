@@ -33,14 +33,29 @@
     return { frameSec: frameSec, ticksPerFrame: Math.round(SECOND_TICKS * frameSec), timebase: tb, ntsc: ntsc };
   }
 
-  /** Парс xmeml → {clips:[{id,start,end,inP,out,path,name,type,fullMatch}]}. */
+  /** Парс xmeml → {clips:[{id,start,end,inP,out,path,name,type,fullMatch, tcFrame,tcRateSec,srcDurFrames}]}.
+      Timecode (frame/timebase/ntsc/displayformat) и длительность файла — из полного <file>
+      блока; для clipitem'ов со ссылкой <file id=".."/> берутся по fileById. */
   function parseXml(xml) {
     var audioRegionStart = xml.indexOf('\n\t\t\t<audio>');
-    var fileById = {}, fm;
+    var fileById = {}, fileTc = {}, fileDur = {}, fm;
     var fileRe = /<file id="([^"]+)"\s*>([\s\S]*?)<\/file>/g;
     while ((fm = fileRe.exec(xml))) {
-      var pm = fm[2].match(/<pathurl>([\s\S]*?)<\/pathurl>/);
-      if (pm) fileById[fm[1]] = decodePathUrl(pm[1]);
+      var fid0 = fm[1], fbody = fm[2];
+      var pm = fbody.match(/<pathurl>([\s\S]*?)<\/pathurl>/);
+      if (pm) fileById[fid0] = decodePathUrl(pm[1]);
+      var dm = fbody.match(/<duration>(\d+)<\/duration>/);
+      if (dm) fileDur[fid0] = parseInt(dm[1], 10);
+      var tcm = fbody.match(/<timecode>([\s\S]*?)<\/timecode>/);
+      if (tcm) {
+        var tb = tcm[1].match(/<timebase>(\d+)<\/timebase>/);
+        var fr = tcm[1].match(/<frame>(\d+)<\/frame>/);
+        var nt = /<ntsc>TRUE<\/ntsc>/i.test(tcm[1]);
+        if (tb && fr) {
+          var tbN = parseInt(tb[1], 10);
+          fileTc[fid0] = { frame: parseInt(fr[1], 10), realFps: nt ? (tbN * 1000 / 1001) : tbN };
+        }
+      }
     }
     var clips = [], cm;
     var ciRe = /<clipitem id="([^"]+)"[^>]*>([\s\S]*?)<\/clipitem>/g;
@@ -50,11 +65,14 @@
       var fidM = body.match(/<file id="([^"]+)"/);
       var fid = fidM ? fidM[1] : null;
       var nameM = body.match(/<name>([\s\S]*?)<\/name>/);
+      var tc = fid ? fileTc[fid] : null;
       clips.push({
         id: cm[1], start: num(/<start>(-?\d+)<\/start>/), end: num(/<end>(-?\d+)<\/end>/),
         inP: num(/<in>(-?\d+)<\/in>/), out: num(/<out>(-?\d+)<\/out>/),
         fid: fid, path: fid ? fileById[fid] : null,
         name: nameM ? nameM[1] : cm[1], type: offset < audioRegionStart ? 'video' : 'audio',
+        tcStartSec: tc ? (tc.frame / tc.realFps) : null,
+        srcDurSec: (fid && fileDur[fid] && tc) ? (fileDur[fid] / tc.realFps) : null,
         fullMatch: cm[0]
       });
     }
@@ -96,6 +114,45 @@
         targetFrames: Math.round(rows[r].targetSec / FRAME),
         status: rows[r].status, comp: rows[r].component
       };
+    }
+
+    /* ── СПАСЕНИЕ ПО TIMECODE (модель Syncaila для спанированных камер) ──────────────
+       Файлы одной камеры, разбитой на куски (P1137553→554→555→556), имеют ОБЩИЙ клок:
+       их timecode'ы непрерывны (tcEnd[i] == tcStart[i+1]). Если хотя бы один кусок цепи
+       синхронизирован по звуку, остальные (даже БЕЗ звукового совпадения) встают ТОЧНО
+       по дельте timecode относительно него. Это ставит клипы, которые аудио-корреляция
+       не смогла привязать (P553 дал ложный пик). */
+    var srcByKey = {}; /* key → {tcStart, srcDur, plan, key} */
+    for (var sa = 0; sa < clips.length; sa++) {
+      var sc = clips[sa]; if (sc.tcStartSec == null || sc.srcDurSec == null) continue;
+      var sk = keyOf(sc.path, sc.start);
+      if (!srcByKey[sk] && planByKey[sk]) srcByKey[sk] = { tcStart: sc.tcStartSec, srcDur: sc.srcDurSec, plan: planByKey[sk], key: sk };
+    }
+    var srcList = []; for (var sk2 in srcByKey) if (srcByKey.hasOwnProperty(sk2)) srcList.push(srcByKey[sk2]);
+    srcList.sort(function (a, b) { return a.tcStart - b.tcStart; });
+    /* цепи по непрерывности timecode (стык в пределах 0.5с — один непрерывный рекординг) */
+    var TC_TOL = 0.5;
+    var chains = [], curChain = null;
+    for (var ci = 0; ci < srcList.length; ci++) {
+      var s = srcList[ci];
+      if (curChain && Math.abs(s.tcStart - curChain.tcEnd) <= TC_TOL) { curChain.members.push(s); curChain.tcEnd = s.tcStart + s.srcDur; }
+      else { curChain = { members: [s], tcEnd: s.tcStart + s.srcDur }; chains.push(curChain); }
+    }
+    var rescued = 0;
+    for (var ch = 0; ch < chains.length; ch++) {
+      var mem = chains[ch].members; if (mem.length < 2) continue;
+      var anchor = null;
+      for (var am = 0; am < mem.length; am++) if (mem[am].plan.status !== 'unsynced') { anchor = mem[am]; break; }
+      if (!anchor) continue; /* вся цепь без звука — оставляем как есть (уйдёт в красные) */
+      for (var rm = 0; rm < mem.length; rm++) {
+        var m = mem[rm]; if (m.plan.status !== 'unsynced') continue;
+        /* позиция = якорь + (tc дельта между кусками) в кадрах секвенции */
+        m.plan.targetFrames = anchor.plan.targetFrames + Math.round((m.tcStart - anchor.tcStart) / FRAME);
+        m.plan.status = 'sync';
+        m.plan.comp = anchor.plan.comp;
+        m.plan.tcRescued = true;
+        rescued++;
+      }
     }
 
     // план каждого clipitem: позиция = targetFrames; in/out = ОРИГИНАЛ (полная длина).
@@ -160,7 +217,7 @@
     blk = blk.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, '$1' + endF + '$2');
 
     var out = xmlHead + blk + xmlTail;
-    return { xml: out, stats: { synced: synced, unsynced: unsynced,
+    return { xml: out, stats: { synced: synced, unsynced: unsynced, tcRescued: rescued,
       syncedEndSec: Math.round(syncedEndF * FRAME), unsyncedEndSec: Math.round(endF * FRAME),
       trimmedHeadSec: 0, trimmedTailSec: 0, dropped: 0, hasUnsynced: unsynced > 0 } };
   }

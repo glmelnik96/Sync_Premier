@@ -29,6 +29,7 @@ async function main() {
   writeFileSync(OUT, res.xml, 'utf8');
   const s = res.stats;
   console.log(`_SYNCED: ${s.synced} клипов синхронно (0–${s.syncedEndSec}s)` +
+    (s.tcRescued ? `, ${s.tcRescued} по timecode` : '') +
     (s.hasUnsynced ? `, ${s.unsynced} без связи в конце (красные, до ${s.unsyncedEndSec}s)` : '') +
     ` → ${OUT}`);
 }

@@ -71,6 +71,7 @@
         '</div>');
     });
     var notes = [];
+    if (s.tcRescued) notes.push(s.tcRescued + ' клипов без звукового совпадения поставлено по timecode (спанированная камера).');
     if (s.hasUnsynced) notes.push(s.unsynced + ' клипов без общего звука — в конце секвенции, помечены красным. Разберите вручную.');
     if (notes.length) rows.push('<div class="note">' + notes.join('<br>') + '</div>');
     showResult(rows.join(''));
