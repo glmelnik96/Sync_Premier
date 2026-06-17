@@ -57,6 +57,12 @@
         }
       }
     }
+    /* границы sequence-level <track> (для определения исходной дорожки = устройства/камеры:
+       карты импортируют файлы одной камеры на одну дорожку). Глобальный сквозной индекс. */
+    var trackBounds = []; var trRe = /<track\b[^>]*>/g, trm, tIdxScan = 0;
+    while ((trm = trRe.exec(xml))) { trackBounds.push({ pos: trm.index, idx: tIdxScan++ }); }
+    function trackAt(off) { var t = -1; for (var i = 0; i < trackBounds.length; i++) { if (trackBounds[i].pos < off) t = trackBounds[i].idx; else break; } return t; }
+
     var clips = [], cm;
     var ciRe = /<clipitem id="([^"]+)"[^>]*>([\s\S]*?)<\/clipitem>/g;
     while ((cm = ciRe.exec(xml))) {
@@ -71,6 +77,7 @@
         inP: num(/<in>(-?\d+)<\/in>/), out: num(/<out>(-?\d+)<\/out>/),
         fid: fid, path: fid ? fileById[fid] : null,
         name: nameM ? nameM[1] : cm[1], type: offset < audioRegionStart ? 'video' : 'audio',
+        trackId: trackAt(offset),
         tcStartSec: tc ? (tc.frame / tc.realFps) : null,
         srcDurSec: (fid && fileDur[fid] && tc) ? (fileDur[fid] / tc.realFps) : null,
         fullMatch: cm[0]
@@ -112,46 +119,48 @@
       var c0 = clipById[rows[r].nodeId]; if (!c0) continue;
       planByKey[keyOf(c0.path, c0.start)] = {
         targetFrames: Math.round(rows[r].targetSec / FRAME),
-        status: rows[r].status, comp: rows[r].component
+        status: rows[r].status, comp: rows[r].component, conf: rows[r].confidence || 0
       };
     }
 
-    /* ── СПАСЕНИЕ ПО TIMECODE (модель Syncaila для спанированных камер) ──────────────
-       Файлы одной камеры, разбитой на куски (P1137553→554→555→556), имеют ОБЩИЙ клок:
-       их timecode'ы непрерывны (tcEnd[i] == tcStart[i+1]). Если хотя бы один кусок цепи
-       синхронизирован по звуку, остальные (даже БЕЗ звукового совпадения) встают ТОЧНО
-       по дельте timecode относительно него. Это ставит клипы, которые аудио-корреляция
-       не смогла привязать (P553 дал ложный пик). */
-    var srcByKey = {}; /* key → {tcStart, srcDur, plan, key} */
+    /* ── РАЗМЕЩЕНИЕ ФАЙЛОВ УСТРОЙСТВА ПО TIMECODE (модель Syncaila) ──────────────────
+       Камера, разбитая на МНОГО файлов (A065: 49 файлов; P-серия), импортируется на ОДНУ
+       дорожку — это одно устройство с ОБЩИМ клоком. Если синхронизировать каждый файл
+       НЕЗАВИСИМО по звуку, мелкие ошибки дают НАЛОЖЕНИЯ на дорожке → Premiere выкидывает
+       перекрытые клипы (клипы «пропадают»). Решение: всё устройство привязывается к миру
+       ОДНИМ лучшим аудио-якорем, остальные файлы ставятся по дельте timecode относительно
+       него. timecode'ы файлов не пересекаются → наложений нет. Так делает Syncaila. */
+    var devByKey = {}; /* planKey → {tcStart, trackId} (видео-дорожка приоритетна) */
     for (var sa = 0; sa < clips.length; sa++) {
-      var sc = clips[sa]; if (sc.tcStartSec == null || sc.srcDurSec == null) continue;
-      var sk = keyOf(sc.path, sc.start);
-      if (!srcByKey[sk] && planByKey[sk]) srcByKey[sk] = { tcStart: sc.tcStartSec, srcDur: sc.srcDurSec, plan: planByKey[sk], key: sk };
+      var sc = clips[sa]; if (sc.tcStartSec == null) continue;
+      var sk = keyOf(sc.path, sc.start); if (!planByKey[sk]) continue;
+      if (!devByKey[sk]) devByKey[sk] = { tcStart: sc.tcStartSec, trackId: sc.trackId };
+      else if (sc.type === 'video') devByKey[sk].trackId = sc.trackId; /* предпочесть видео-дорожку */
     }
-    var srcList = []; for (var sk2 in srcByKey) if (srcByKey.hasOwnProperty(sk2)) srcList.push(srcByKey[sk2]);
-    srcList.sort(function (a, b) { return a.tcStart - b.tcStart; });
-    /* цепи по непрерывности timecode (стык в пределах 0.5с — один непрерывный рекординг) */
-    var TC_TOL = 0.5;
-    var chains = [], curChain = null;
-    for (var ci = 0; ci < srcList.length; ci++) {
-      var s = srcList[ci];
-      if (curChain && Math.abs(s.tcStart - curChain.tcEnd) <= TC_TOL) { curChain.members.push(s); curChain.tcEnd = s.tcStart + s.srcDur; }
-      else { curChain = { members: [s], tcEnd: s.tcStart + s.srcDur }; chains.push(curChain); }
+    var devGroups = {}; /* trackId → [{key, tcStart, plan}] */
+    for (var dk in devByKey) if (devByKey.hasOwnProperty(dk)) {
+      var d = devByKey[dk], tid = d.trackId;
+      if (!devGroups[tid]) devGroups[tid] = [];
+      devGroups[tid].push({ key: dk, tcStart: d.tcStart, plan: planByKey[dk] });
     }
     var rescued = 0;
-    for (var ch = 0; ch < chains.length; ch++) {
-      var mem = chains[ch].members; if (mem.length < 2) continue;
+    for (var tg in devGroups) if (devGroups.hasOwnProperty(tg)) {
+      var files = devGroups[tg]; if (files.length < 2) continue; /* одиночный файл — оставляем аудио */
       var anchor = null;
-      for (var am = 0; am < mem.length; am++) if (mem[am].plan.status !== 'unsynced') { anchor = mem[am]; break; }
-      if (!anchor) continue; /* вся цепь без звука — оставляем как есть (уйдёт в красные) */
-      for (var rm = 0; rm < mem.length; rm++) {
-        var m = mem[rm]; if (m.plan.status !== 'unsynced') continue;
-        /* позиция = якорь + (tc дельта между кусками) в кадрах секвенции */
-        m.plan.targetFrames = anchor.plan.targetFrames + Math.round((m.tcStart - anchor.tcStart) / FRAME);
-        m.plan.status = 'sync';
-        m.plan.comp = anchor.plan.comp;
-        m.plan.tcRescued = true;
-        rescued++;
+      for (var fi = 0; fi < files.length; fi++) {
+        var fp = files[fi]; if (fp.plan.status === 'unsynced') continue;
+        if (!anchor || fp.plan.conf > anchor.plan.conf) anchor = fp;
+      }
+      if (!anchor) continue; /* у устройства нет надёжного аудио-якоря — оставляем как есть */
+      for (var pj = 0; pj < files.length; pj++) {
+        var m = files[pj];
+        var newT = anchor.plan.targetFrames + Math.round((m.tcStart - anchor.tcStart) / FRAME);
+        if (m.plan.status === 'unsynced' || m.plan.targetFrames !== newT) {
+          if (m.plan.status === 'unsynced') rescued++;
+          m.plan.targetFrames = newT;
+          m.plan.status = 'sync';
+          m.plan.comp = anchor.plan.comp;
+        }
       }
     }
 
