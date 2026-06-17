@@ -240,6 +240,12 @@
       var block = c.fullMatch
         .replace(/<start>-?\d+<\/start>/, '<start>' + s + '</start>')
         .replace(/<end>-?\d+<\/end>/, '<end>' + en + '</end>');
+      /* masterclipid ДОЛЖЕН совпадать с id мастер-клипа (= file id), иначе Premiere не
+         резолвит clipitem к мастер-клипу → длинные клипы не рендерятся. Исходник Premiere
+         даёт masterclipid="masterclip-N", а мастер-клипы у нас <clip id="file-N">. Syncaila
+         унифицирует всё в file id. Переписываем masterclipid в file id ЭТОГО clipitem. */
+      var fidM = c.fullMatch.match(/<file id="([^"]+)"/);
+      if (fidM) block = block.replace(/<masterclipid>[^<]*<\/masterclipid>/, '<masterclipid>' + fidM[1] + '</masterclipid>');
       if (c.plan.status === 'unsynced') {
         block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
         unsynced++;
@@ -256,6 +262,18 @@
 
     var blk = seqTemplate;
     for (var b2 = 0; b2 < clips.length; b2++) { var rep = renderClip(clips[b2]); if (rep !== clips[b2].fullMatch) blk = blk.replace(clips[b2].fullMatch, rep); }
+    /* КРИТИЧНО: clipitem'ы ВНУТРИ дорожки должны идти в ХРОНОЛОГИЧЕСКОМ порядке (по <start>).
+       Иначе Premiere ломает импорт многоклиповых дорожек — клипы пропадают (был корень
+       «нет целых камер»: я менял позиции, но XML-порядок clipitem оставался исходным). */
+    blk = blk.replace(/(<track\b[^>]*>)([\s\S]*?)(<\/track>)/g, function (full, open, body, close) {
+      var items = [], cre = /<clipitem id="[^"]+"[\s\S]*?<\/clipitem>/g, im;
+      while ((im = cre.exec(body))) items.push(im[0]);
+      if (items.length < 2) return full;
+      var firstIdx = body.indexOf(items[0]);
+      var head = body.slice(0, firstIdx), tail = body.slice(body.indexOf(items[items.length - 1]) + items[items.length - 1].length);
+      items.sort(function (a, b) { var sa = parseInt((a.match(/<start>(-?\d+)/) || [0, 0])[1], 10), sb = parseInt((b.match(/<start>(-?\d+)/) || [0, 0])[1], 10); return sa - sb; });
+      return open + head + items.join('\n\t\t\t\t\t\t') + tail + close;
+    });
     blk = blk.replace(/<name>([^<]*)<\/name>/, function (m, n) { return '<name>' + n + '_SYNCED</name>'; });
     var endTicks = endF * TPF;
     blk = blk.replace(/(<sequence\b[^>]*?)>/, function (full, hh) {
@@ -268,7 +286,35 @@
     });
     blk = blk.replace(/(<\/uuid>\s*<duration>)\d+(<\/duration>)/, '$1' + endF + '$2');
 
-    var out = xmlHead + blk + xmlTail;
+    /* МАСТЕР-КЛИПЫ + <project> ОБЁРТКА (как Syncaila). КРИТИЧНО для импорта: без
+       определений мастер-клипов Premiere НЕ резолвит длинные clipitem'ы к полной длине
+       медиа → длинные клипы не рендерятся/пропадают (короткие остаются). Эксперимент
+       подтвердил: голый <sequence> от Syncaila без мастер-клипов вообще не импортируется.
+       Извлекаем полные <file id="X">...</file> из clipitem'ов, оборачиваем в <clip id="X">. */
+    var fileBlocks = {}, fbm;
+    var fbRe = /<file id="([^"]+)"\s*>([\s\S]*?)<\/file>/g;
+    while ((fbm = fbRe.exec(blk))) { if (!fileBlocks[fbm[1]]) fileBlocks[fbm[1]] = fbm[2]; }
+    var masterClips = '';
+    for (var fkey in fileBlocks) { if (!fileBlocks.hasOwnProperty(fkey)) continue;
+      var body = fileBlocks[fkey];
+      var fnameM = body.match(/<name>([\s\S]*?)<\/name>/);
+      var fname = fnameM ? fnameM[1] : fkey;
+      var chM = body.match(/<channelcount>(\d+)<\/channelcount>/);
+      var nch = chM ? parseInt(chM[1], 10) : 2;
+      var audioTracks = '';
+      for (var ai2 = 0; ai2 < nch; ai2++) audioTracks += '\n\t\t\t\t\t\t<track>\n\t\t\t\t\t\t\t<clipitem>\n\t\t\t\t\t\t\t\t<file id="' + fkey + '"/>\n\t\t\t\t\t\t\t</clipitem>\n\t\t\t\t\t\t</track>';
+      masterClips += '\n\t\t\t<clip id="' + fkey + '" explodedTracks="true">\n\t\t\t\t<name>' + fname + '</name>\n\t\t\t\t<media>\n\t\t\t\t\t<video>\n\t\t\t\t\t\t<track>\n\t\t\t\t\t\t\t<clipitem>\n\t\t\t\t\t\t\t\t<file id="' + fkey + '">' + body + '</file>\n\t\t\t\t\t\t\t</clipitem>\n\t\t\t\t\t\t</track>\n\t\t\t\t\t</video>\n\t\t\t\t\t<audio>' + audioTracks + '\n\t\t\t\t\t</audio>\n\t\t\t\t</media>\n\t\t\t</clip>';
+    }
+    /* В СЕКВЕНЦИИ полные <file id="X">...</file> → ССЫЛКИ <file id="X"/> (как Syncaila).
+       Полное определение теперь ТОЛЬКО в мастер-клипе. Дублирование полного file-def (и в
+       мастер-клипе, и в clipitem секвенции) с тем же id может ломать резолв мастер-клипа →
+       длинные клипы не рендерятся. */
+    blk = blk.replace(/<file id="([^"]+)"\s*>[\s\S]*?<\/file>/g, '<file id="$1"/>');
+
+    var projName = ((xml.match(/<name>([^<]*)<\/name>/) || [])[1] || 'sync') + '_SYNCED';
+    var wrapped = '\n\t<project>\n\t\t<name>' + projName + '</name>\n\t\t<children>' + masterClips + '\n\t\t\t' + blk + '\n\t\t</children>\n\t</project>\n';
+
+    var out = xmlHead + wrapped + xmlTail;
     return { xml: out, stats: { synced: synced, unsynced: unsynced, tcRescued: rescued,
       syncedEndSec: Math.round(syncedEndF * FRAME), unsyncedEndSec: Math.round(endF * FRAME),
       trimmedHeadSec: 0, trimmedTailSec: 0, dropped: 0, hasUnsynced: unsynced > 0 } };
