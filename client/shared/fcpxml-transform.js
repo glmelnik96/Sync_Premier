@@ -163,15 +163,51 @@
       c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp };
     }
 
-    // синхронные → сдвиг так, чтобы самый ранний встал в 0
-    var gmin = null;
-    for (var e = 0; e < clips.length; e++) { var ce = clips[e]; if (ce.plan && ce.plan.status !== 'unsynced') { if (gmin === null || ce.plan.start < gmin) gmin = ce.plan.start; } }
-    if (gmin === null) gmin = 0;
-    for (var f = 0; f < clips.length; f++) { var cf = clips[f]; if (cf.plan && cf.plan.status !== 'unsynced') { cf.plan.start -= gmin; cf.plan.end -= gmin; } }
-
-    // конец синхронного контента
-    var syncedEndF = 0;
-    for (var s2 = 0; s2 < clips.length; s2++) { var cs = clips[s2]; if (cs.plan && cs.plan.status !== 'unsynced' && cs.plan.end > syncedEndF) syncedEndF = cs.plan.end; }
+    /* ── ПОСЛЕДОВАТЕЛЬНОСТЬ СЪЁМКИ ПО TIMECODE (модель Syncaila) ────────────────────
+       Комнаты (компоненты аудио-синхро) не связаны звуком между собой, поэтому их
+       хронологический порядок берём из TIMECODE. Якорь комнаты = её самый длинный
+       источник (обычно рекордер с надёжным сквозным TC). «Реальное время начала
+       комнаты» = tcStart(якорь) − (позиция якоря внутри комнаты). Комнаты раскладываются
+       в порядке этого времени, ВПЛОТНУЮ (back-to-back, как Syncaila). Обобщается на любой
+       источник с timecode; комнаты без TC сохраняют исходный относительный порядок. */
+    var rooms = {}; /* comp → {clips:[], minStart} */
+    for (var e = 0; e < clips.length; e++) {
+      var ce = clips[e]; if (!ce.plan || ce.plan.status === 'unsynced') continue;
+      var cmp = ce.plan.comp;
+      if (!rooms[cmp]) rooms[cmp] = { comp: cmp, clips: [], minStart: ce.plan.start };
+      rooms[cmp].clips.push(ce);
+      if (ce.plan.start < rooms[cmp].minStart) rooms[cmp].minStart = ce.plan.start;
+    }
+    var roomList = [];
+    for (var rc in rooms) if (rooms.hasOwnProperty(rc)) {
+      var rm = rooms[rc], anchor = null;
+      for (var ai = 0; ai < rm.clips.length; ai++) {
+        var cl = rm.clips[ai];
+        if (cl.tcStartSec == null) continue;
+        if (!anchor || (cl.srcDurSec || 0) > (anchor.srcDurSec || 0)) anchor = cl;
+      }
+      rm.impliedSec = anchor ? (anchor.tcStartSec - (anchor.plan.start - rm.minStart) * FRAME) : null;
+      roomList.push(rm);
+    }
+    /* комнаты с TC — по impliedSec; без TC — после, в исходном относительном порядке */
+    var BIG = 1e12;
+    roomList.sort(function (a, b) {
+      var ka = (a.impliedSec == null) ? (BIG + a.minStart) : a.impliedSec;
+      var kb = (b.impliedSec == null) ? (BIG + b.minStart) : b.impliedSec;
+      return ka - kb;
+    });
+    /* разложить последовательно back-to-back, сохраняя внутрикомнатные позиции */
+    var cursor = 0, syncedEndF = 0;
+    for (var ri = 0; ri < roomList.length; ri++) {
+      var room = roomList[ri], off = cursor - room.minStart, roomEnd = 0;
+      for (var rj = 0; rj < room.clips.length; rj++) {
+        var rcl = room.clips[rj];
+        rcl.plan.start += off; rcl.plan.end += off;
+        if (rcl.plan.end > roomEnd) roomEnd = rcl.plan.end;
+      }
+      cursor = roomEnd;
+    }
+    syncedEndF = cursor;
 
     // несвязанные → ВПЛОТНУЮ в конец (без зазора), сохраняя взаимное расположение групп
     var umin = null;
