@@ -18,7 +18,7 @@ CEP-расширение (HTML/JS + ExtendScript), которое Adobe CEP-runt
 | Компонент | Почему работает на Mac |
 |---|---|
 | `audio-envelope.js` поиск ffmpeg | Уже проверяет `/opt/homebrew/bin/ffmpeg`, `/usr/local/bin/ffmpeg`, `/usr/bin/ffmpeg` и `which ffmpeg` на non-Windows |
-| `host/premiere-sync.jsx` | `Folder.temp.fsName` — кросс-платформенный temp; `File`/`importFiles`/`exportAsFinalCutProXML` есть в ExtendScript на обеих ОС |
+| `host/premiere-sync.jsx` | `Folder.temp.fsName` — кросс-платформенный temp; `File`/`importFiles`/`exportAsFinalCutProXML` есть в ExtendScript на обеих ОС. JSON-полифилл (нет нативного JSON в части версий Premiere) и ES3-чистота — едины для Win/Mac |
 | `fcpxml-transform.js` | Чистые строковые операции над XML; `file://localhost/...` pathurl декодируется одинаково |
 | `sync-core/graph/runner` | Чистая математика, без I/O и путей |
 | `bridge-premiere.js` | Нормализует пути (`\` → `/`), экранирование — платформо-независимо |

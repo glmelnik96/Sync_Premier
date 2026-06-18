@@ -13,7 +13,23 @@
   function findFfmpegPath() {
     if (!hasNode()) return null;
     var fs = require('fs');
-    var cands = ['C:\\ffmpeg\\bin\\ffmpeg.exe', '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg'];
+    var cands = [
+      'C:\\ffmpeg\\bin\\ffmpeg.exe',
+      '/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg', '/opt/local/bin/ffmpeg'
+    ];
+    /* распространённые места установки ffmpeg на Windows (winget/choco/scoop) */
+    try {
+      var home = process.env.USERPROFILE || process.env.HOME;
+      if (process.platform === 'win32') {
+        if (home) {
+          cands.push(home + '\\scoop\\shims\\ffmpeg.exe');
+          cands.push(home + '\\scoop\\apps\\ffmpeg\\current\\bin\\ffmpeg.exe');
+        }
+        cands.push('C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe');
+        var pf = process.env.ProgramFiles;
+        if (pf) cands.push(pf + '\\ffmpeg\\bin\\ffmpeg.exe');
+      }
+    } catch (eCands) {}
     for (var i = 0; i < cands.length; i++) { try { if (fs.existsSync(cands[i])) return cands[i]; } catch (e) {} }
     try {
       var execSync = require('child_process').execSync;

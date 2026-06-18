@@ -90,12 +90,13 @@
       });
     },
 
-    /* export/import долгие (Premiere conform/parse) → таймаут 180с. */
-    exportActiveSequenceXml: function (cb) { this.evalJson('$._SYNC_.exportActiveSequenceXml()', cb, 180000); },
+    /* export/import долгие (Premiere conform/parse больших проектов) → таймаут 600с,
+       чтобы не падать ложно на 300+ клипах / 100+ источниках. */
+    exportActiveSequenceXml: function (cb) { this.evalJson('$._SYNC_.exportActiveSequenceXml()', cb, 600000); },
 
     importSyncedXml: function (path, cb) {
       var json = escapeDoubleQuoted(JSON.stringify({ path: String(path) }));
-      this.evalJson('$._SYNC_.importSyncedXml("' + json + '")', cb, 180000);
+      this.evalJson('$._SYNC_.importSyncedXml("' + json + '")', cb, 600000);
     }
   };
 })(window);

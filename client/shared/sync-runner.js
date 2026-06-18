@@ -232,7 +232,8 @@
     /* ключ многоканального рекордера: ZOOM0002_Tr1.wav / ZOOM0002_Tr2.wav → "REC:ZOOM0002".
        Дорожки одного рекордера синхронны по определению (офсет 0) → одна референс-единица. */
     function recorderKey(path) {
-      var name = String(path).split('/').pop().replace(/\.[^.]+$/, '');
+      var parts = String(path).split(/[/\\]/);            /* и '/', и Windows '\' */
+      var name = parts[parts.length - 1].replace(/\.[^.]+$/, '');
       var stem = name.replace(/_Tr\d+$/i, '').replace(/_(L|R)$/i, '');
       return stem !== name ? 'REC:' + stem : path;
     }

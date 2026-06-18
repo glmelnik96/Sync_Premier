@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * CEP remote debugging driver (2026-06-11).
- * Подключается к debug-порту панели (см. .debug, порт 8098) по Chrome
+ * Подключается к debug-порту панели (см. .debug, порт 8100) по Chrome
  * DevTools Protocol и выполняет JS в контексте панели. Используется для
  * ручной валидации фич прямо в живом Premiere.
  *
@@ -19,7 +19,7 @@
  *   node tools/cep-debug.mjs host "$._EXT_PRM_.setPlayheadSec(12.5)"
  */
 
-const PORT = process.env.CEP_DEBUG_PORT || 8098;
+const PORT = process.env.CEP_DEBUG_PORT || 8100;  /* = .debug / manifest */
 
 async function getTargets() {
   const res = await fetch(`http://localhost:${PORT}/json`);
