@@ -420,7 +420,7 @@
                  камеры, минуя вырожденные часы компоненты. posSec = старт ин-поинта клипа
                  внутри ПОЛНОЙ огибающей источника-партнёра. */
               if (refUnits[ri].dev !== myDev && (!cross || lr.corr > cross.corr))
-                cross = { partnerPath: refUnits[ri].repPath, posSec: lr.posSec, corr: lr.corr };
+                cross = { partnerPath: refUnits[ri].repPath, posSec: lr.posSec, corr: lr.corr, partnerLenSec: refUnits[ri].maxLen * dt };
             }
             /* собственная единица не попала в референсы (большой N) → self-shortcut:
                клип сидит в своём источнике на позиции inPoint, self-corr=1 → побеждает. */
@@ -483,7 +483,7 @@
         for (var n = 0; n < matched.length; n++) {
           var x2 = matched[n], c2 = x2.clip;
           var aCorr = (x2.best && unitRoomCorr[x2.best.unitKey] != null) ? unitRoomCorr[x2.best.unitKey] : 0;
-          var anc = x2.cross ? { path: x2.cross.partnerPath, offsetSec: x2.cross.posSec, corr: x2.cross.corr } : null;
+          var anc = x2.cross ? { path: x2.cross.partnerPath, offsetSec: x2.cross.posSec, corr: x2.cross.corr, partnerLenSec: x2.cross.partnerLenSec } : null;
           if (x2.connected) {
             var target = roomStart[x2.clockId] + (x2.roomTarget - minByClock[x2.clockId]);
             if (target < 0) target = 0;

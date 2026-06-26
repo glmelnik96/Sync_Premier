@@ -209,6 +209,57 @@
       }
     }
 
+    /* ── РЕФАЙН TC→ЗВУК для устройства с ОДНОЗНАЧНЫМ звуком (развилка звук/TC, модель
+       Syncaila) ───────────────────────────────────────────────────────────────────────
+       Жёсткий TC сохраняет «мёртвое время» между дублями. Если же КАЖДЫЙ файл устройства
+       имеет СИЛЬНЫЙ якорь (corr≥REFINE) к СУБСТАНЦИАЛЬНОМУ партнёру (длиннее файла →
+       непрерывный рекордер, не короткий ложный клип) И аудио-позиции МОНОТОННЫ в порядке TC
+       — звук НАДЁЖЕН (кейс 2: чистый ZOOM) → ставим по звуку (как Syncaila). Если хоть один
+       файл без надёжного якоря или порядок нарушен — звук вырожден (кейс 4) → оставляем TC.
+       Защита идеальных кейсов: при недостаточном консенсусе ничего не меняем. */
+    var REFINE_GATE = (opt.refineGate != null) ? opt.refineGate : 0.72;
+    function placedSrcStart2(path) { /* старт источника на таймлайне по ЛЮБОМУ его sync-клипу (бэкбон для рефайна) */
+      for (var pk in planByKey) { if (!planByKey.hasOwnProperty(pk)) continue;
+        if (pk.indexOf(path + '|') !== 0) continue;
+        var pp = planByKey[pk]; if (pp.status === 'unsynced') continue;
+        var cc = clipByKey[pk]; if (!cc) continue;
+        return pp.targetFrames - (cc.inP || 0);
+      }
+      return null;
+    }
+    if (opt.refineAudio !== false) for (var rg in devGroups) if (devGroups.hasOwnProperty(rg)) {
+      var rfiles = devGroups[rg]; if (rfiles.length < 2) continue;
+      var allDev = true;
+      for (var qi = 0; qi < rfiles.length; qi++) if (!rfiles[qi].plan.devPlaced) { allDev = false; break; }
+      if (!allDev) continue; /* рефайним только надёжно-TC устройства */
+      /* по каждому файлу: СИЛЬНЫЙ ли якорь к СУБСТАНЦИАЛЬНОМУ (длиннее файла) партнёру */
+      var rinfo = [];
+      for (var qj = 0; qj < rfiles.length; qj++) {
+        var rpl = rfiles[qj].plan, ran = rpl.anchor, fileDurSec = rfiles[qj].durFrames * FRAME, posF = null;
+        if (ran && (ran.corr || 0) >= REFINE_GATE && ran.partnerLenSec >= fileDurSec) {
+          var rst = placedSrcStart2(ran.path);
+          if (rst != null) posF = rst + Math.round(ran.offsetSec / FRAME);
+        }
+        rinfo.push({ tc: rfiles[qj].tcStart, durF: rfiles[qj].durFrames, plan: rpl, audioF: posF });
+      }
+      rinfo.sort(function (a, b) { return a.tc - b.tc; });
+      /* КОНСЕНСУС: ≥2 сильных файла и их аудио-позиции МОНОТОННЫ в порядке TC → звук надёжен.
+         Иначе (вырожденный звук, кейс 4 / мало якорей) — НЕ трогаем устройство (оставляем TC). */
+      var strong = [], mono2 = true, tolF2 = Math.round(2 / FRAME), prevA = null;
+      for (var qk = 0; qk < rinfo.length; qk++) if (rinfo[qk].audioF != null) {
+        if (prevA != null && rinfo[qk].audioF < prevA - tolF2) { mono2 = false; break; }
+        prevA = rinfo[qk].audioF; strong.push(qk);
+      }
+      if (strong.length < 2 || !mono2) continue;
+      /* применить: сильные → по звуку; слабые → по дельте TC от ближайшего сильного соседа */
+      for (var qm = 0; qm < rinfo.length; qm++) {
+        if (rinfo[qm].audioF != null) { rinfo[qm].plan.targetFrames = rinfo[qm].audioF; continue; }
+        var nb = null, bd = Infinity;
+        for (var qs = 0; qs < strong.length; qs++) { var d2 = Math.abs(strong[qs] - qm); if (d2 < bd) { bd = d2; nb = rinfo[strong[qs]]; } }
+        if (nb) rinfo[qm].plan.targetFrames = nb.audioF + Math.round((rinfo[qm].tc - nb.tc) / FRAME);
+      }
+    }
+
     // план каждого clipitem: позиция = targetFrames; in/out = ОРИГИНАЛ (полная длина).
     for (var a = 0; a < clips.length; a++) {
       var c = clips[a], p = planByKey[keyOf(c.path, c.start)];
