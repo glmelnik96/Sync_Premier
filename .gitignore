@@ -3,7 +3,6 @@ node_modules/
 .DS_Store
 _*cache*.json
 
-# standalone test outputs
-tmp_*_synced.xml
-tmp_*_shifted.xml
+# standalone test outputs / эксперименты сравнения с эталонами
+tmp_*
 sync_premier_*.xml

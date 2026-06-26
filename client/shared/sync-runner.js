@@ -223,6 +223,14 @@
     var coarseMs = opt.coarseWindowMs || 20;
 
     function pad(env, M) { var o = new Float64Array(env.length + 2 * M); for (var i = 0; i < env.length; i++) o[M + i] = env[i]; return o; }
+    /* блочное прореживание огибающей в D раз (среднее) — для грубого матча на больших проектах */
+    function downsample(env, D) {
+      if (D <= 1) return env;
+      var n = Math.floor(env.length / D); if (n < 1) n = 1;
+      var o = new Float64Array(n);
+      for (var i = 0; i < n; i++) { var s = 0; for (var k = 0; k < D; k++) s += env[i * D + k]; o[i] = s / D; }
+      return o;
+    }
     /* позиция шаблона t в сигнале s (полный поиск с краевым перекрытием) → {posSec, corr} */
     function locate(sFull, tEnv, dt) {
       var M = tEnv.length;
@@ -237,6 +245,16 @@
       var stem = name.replace(/_Tr\d+$/i, '').replace(/_(L|R)$/i, '');
       return stem !== name ? 'REC:' + stem : path;
     }
+    /* ключ УСТРОЙСТВА (камера/рекордер) = первый токен имени файла: A065_0718…_C071 → "A065",
+       1100_0506…_C004 → "1100", Track 1_005 → "Track 1", ZOOM0002_Tr1 → "ZOOM0002". Нужен,
+       чтобы аудио-якорь клипа искался к ДРУГОМУ физическому устройству (а не к самому себе /
+       соседнему сегменту той же камеры — это давало вырожденные совпадения). */
+    function deviceKey(path) {
+      var parts = String(path).split(/[/\\]/);
+      var name = parts[parts.length - 1].replace(/\.[^.]+$/, '');
+      var us = name.indexOf('_');
+      return us > 0 ? name.slice(0, us) : name;
+    }
 
     var srcList = uniqueSources(snapshot);
     /* 1. полные огибающие источников */
@@ -247,11 +265,28 @@
     }).then(function (srcEnvs) {
       var dt = srcEnvs.length ? srcEnvs[0].dtSec : 0.02;
 
+      /* ПРОИЗВОДИТЕЛЬНОСТЬ на БОЛЬШИХ проектах: при многих источниках корреляция против
+         ОЧЕНЬ длинных огибающих (рекордер на 90+ мин = 270k+ сэмплов) — это FFT длины 512k на
+         КАЖДУЮ пару клип×референс → нереально (кейс 5: таймаут 10 мин). Прорежаем ВСЕ огибающие
+         в DS раз (блочное среднее) так, чтобы самая длинная влезла в ~TARGET сэмплов. Тогда и
+         попарный граф, и поклиповый матч идут на грубой шкале (dt×DS), позиции — с точностью
+         ~dt×DS. Для типовых проектов (≤ порога) DS=1 → поведение НЕ меняется. */
+      var DS = 1;
+      if (srcEnvs.length > (opt.maxFullMatch || 160)) {
+        var maxLen = 0; for (var ml = 0; ml < srcEnvs.length; ml++) if (srcEnvs[ml].env.length > maxLen) maxLen = srcEnvs[ml].env.length;
+        var TARGET = opt.coarseTarget || 40000;
+        DS = Math.max(1, Math.ceil(maxLen / TARGET));
+        if (DS > 1) {
+          for (var ds = 0; ds < srcEnvs.length; ds++) srcEnvs[ds].env = downsample(srcEnvs[ds].env, DS);
+          dt = dt * DS;
+        }
+      }
+
       /* 2. собрать референс-ЕДИНИЦЫ: дорожки одного рекордера → одна единица (несколько env). */
       var unitMap = {};
       for (var u0 = 0; u0 < srcEnvs.length; u0++) {
         var key0 = recorderKey(srcEnvs[u0].path);
-        if (!unitMap[key0]) unitMap[key0] = { key: key0, tracks: [], maxLen: 0 };
+        if (!unitMap[key0]) unitMap[key0] = { key: key0, tracks: [], maxLen: 0, dev: deviceKey(srcEnvs[u0].path), repPath: srcEnvs[u0].path };
         unitMap[key0].tracks.push(srcEnvs[u0]);
         if (srcEnvs[u0].env.length > unitMap[key0].maxLen) unitMap[key0].maxLen = srcEnvs[u0].env.length;
       }
@@ -353,17 +388,45 @@
         }
       }
 
-      /* 4. каждый клип → лучшая по корреляции единица → позиция в часах её комнаты */
+      /* 4. каждый клип → лучшая по корреляции единица → позиция в часах её комнаты.
+         ПРОИЗВОДИТЕЛЬНОСТЬ: при МНОГИХ источниках (300+) полный перебор клип×ВСЕ_единицы —
+         это O(clips×units) FFT-корреляций (на кейсе 5: 1347×355 ≈ 478k → ~11 мин, таймаут).
+         Но «лучшая единица» почти всегда — СОБСТВЕННАЯ единица клипа (self-match≈1.0). Поэтому
+         при большом N матчим только против ТОП-K самых длинных единиц (референсов), а
+         собственную учитываем по self-shortcut (позиция клипа в своём источнике = его inPoint).
+         При малом N (≤ maxFullMatch) — полный перебор, поведение НЕ меняется (кейсы 1–4). */
+      var maxFullMatch = opt.maxFullMatch || 160;
+      var fullMatch = units.length <= maxFullMatch;
+      var refUnits = units;
+      if (!fullMatch) {
+        refUnits = units.slice().sort(function (a, b) { return b.maxLen - a.maxLen; });
+        refUnits = refUnits.slice(0, opt.maxRefs || 60);
+      }
       var clips = (snapshot.clips || []).filter(function (c) { return c.trackType === 'audio' && c.mediaPath; });
       return mapSeries(clips, function (c) {
         return deps.extractEnvelope(c.mediaPath, { startSec: c.inPointSec, durSec: c.endSec - c.startSec, windowMs: coarseMs })
           .then(function (e) {
-            var best = null;
-            for (var ri = 0; ri < units.length; ri++) {
-              var lr = locateUnit(units[ri], e.env);
-              if (!best || lr.corr > best.corr) best = { unitKey: units[ri].key, posSec: lr.posSec, corr: lr.corr };
+            var cenv = DS > 1 ? downsample(e.env, DS) : e.env;
+            e = { env: cenv };
+            var myDev = deviceKey(c.mediaPath);
+            var ownKey = recorderKey(c.mediaPath);
+            var best = null, cross = null, ownSeen = false;
+            for (var ri = 0; ri < refUnits.length; ri++) {
+              if (refUnits[ri].key === ownKey) ownSeen = true;
+              var lr = locateUnit(refUnits[ri], e.env);
+              if (!best || lr.corr > best.corr) best = { unitKey: refUnits[ri].key, posSec: lr.posSec, corr: lr.corr };
+              /* лучшее ребро к ДРУГОМУ устройству — якорь для непривязанных по таймкоду
+                 клипов (аудио-бэг рекордера): ставятся относительно надёжно разложенной
+                 камеры, минуя вырожденные часы компоненты. posSec = старт ин-поинта клипа
+                 внутри ПОЛНОЙ огибающей источника-партнёра. */
+              if (refUnits[ri].dev !== myDev && (!cross || lr.corr > cross.corr))
+                cross = { partnerPath: refUnits[ri].repPath, posSec: lr.posSec, corr: lr.corr };
             }
-            return { clip: c, best: best };
+            /* собственная единица не попала в референсы (большой N) → self-shortcut:
+               клип сидит в своём источнике на позиции inPoint, self-corr=1 → побеждает. */
+            if (!ownSeen && unitMap[ownKey] && (!best || best.corr < 1))
+              best = { unitKey: ownKey, posSec: c.inPointSec, corr: 1 };
+            return { clip: c, best: best, cross: cross };
           });
       }).then(function (matched) {
         function med(a) { var b = a.slice().sort(function (p, q) { return p - q; }); return b[Math.floor(b.length / 2)]; }
@@ -420,16 +483,17 @@
         for (var n = 0; n < matched.length; n++) {
           var x2 = matched[n], c2 = x2.clip;
           var aCorr = (x2.best && unitRoomCorr[x2.best.unitKey] != null) ? unitRoomCorr[x2.best.unitKey] : 0;
+          var anc = x2.cross ? { path: x2.cross.partnerPath, offsetSec: x2.cross.posSec, corr: x2.cross.corr } : null;
           if (x2.connected) {
             var target = roomStart[x2.clockId] + (x2.roomTarget - minByClock[x2.clockId]);
             if (target < 0) target = 0;
             rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex, mediaPath: c2.mediaPath,
               shiftSec: target - c2.startSec, targetSec: target, confidence: x2.best ? x2.best.corr : 0,
-              anchorCorr: aCorr, component: x2.clockId, slope: 0, status: 'sync' });
+              anchorCorr: aCorr, anchor: anc, component: x2.clockId, slope: 0, status: 'sync' });
           } else {
             rows.push({ nodeId: c2.nodeId, name: c2.name, trackIndex: c2.trackIndex, mediaPath: c2.mediaPath,
               shiftSec: x2.endTarget - c2.startSec, targetSec: x2.endTarget, confidence: x2.best ? x2.best.corr : 0,
-              anchorCorr: aCorr, component: -1, slope: 0, status: 'unsynced' });
+              anchorCorr: aCorr, anchor: anc, component: -1, slope: 0, status: 'unsynced' });
           }
         }
         return rows;

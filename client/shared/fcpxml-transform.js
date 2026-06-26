@@ -112,15 +112,17 @@
        Несвязанные клипы — вплотную в конец (без зазора → Premiere не обрезает воспр.),
        помечены красным. Прошлые «улучшения» (обрезка lone-аудио, 2 секвенции, drop) были
        причиной невалидного вывода: клипы пропадали и резались неправильно. */
-    var planByKey = {}, clipById = {};
+    var planByKey = {}, clipById = {}, clipByKey = {};
     for (var i = 0; i < clips.length; i++) clipById[clips[i].id] = clips[i];
     function keyOf(path, sf) { return path + '|' + sf; }
+    for (var ck = 0; ck < clips.length; ck++) clipByKey[keyOf(clips[ck].path, clips[ck].start)] = clips[ck];
     for (var r = 0; r < rows.length; r++) {
       var c0 = clipById[rows[r].nodeId]; if (!c0) continue;
       planByKey[keyOf(c0.path, c0.start)] = {
         targetFrames: Math.round(rows[r].targetSec / FRAME),
         status: rows[r].status, comp: rows[r].component,
-        conf: rows[r].confidence || 0, anchorCorr: rows[r].anchorCorr || 0
+        conf: rows[r].confidence || 0, anchorCorr: rows[r].anchorCorr || 0,
+        anchor: rows[r].anchor || null, devPlaced: false
       };
     }
 
@@ -154,6 +156,12 @@
     var rescued = 0;
     for (var tg in devGroups) if (devGroups.hasOwnProperty(tg)) {
       var files = devGroups[tg]; if (files.length < 2) continue; /* одиночный файл — оставляем аудио */
+      /* НАДЁЖНОЕ TC-устройство = файлы с РАЗНЫМИ таймкодами (реальная камера: TC уникальны и
+         монотонны). «Мешок» аудио на одной дорожке (Track 1: много клипов с tc=0 и повторами)
+         — НЕ устройство; его не раскладываем по TC, а притягиваем по звуку к камерам (ниже). */
+      var tcSeen = {}, distinct = 0;
+      for (var ti = 0; ti < files.length; ti++) { var tk = Math.round(files[ti].tcStart / FRAME); if (!tcSeen[tk]) { tcSeen[tk] = 1; distinct++; } }
+      if (distinct < files.length) continue;
       /* якорь = файл с макс anchorCorr (реальная связь с комнатой, не self-match) */
       var anchor = null;
       for (var fi = 0; fi < files.length; fi++) {
@@ -168,6 +176,36 @@
         if (m.plan.status === 'unsynced') rescued++;
         m.plan.status = 'sync';
         m.plan.comp = anchor.plan.comp;
+        m.plan.devPlaced = true;
+      }
+    }
+
+    /* ── АУДИО-ЯКОРЬ непривязанных по TC клипов к НАДЁЖНОМУ бэкбону (модель Syncaila) ──────
+       Клипы без надёжного TC (аудио «мешком», одиночные файлы) ставятся по СВОЕМУ лучшему
+       межкамерному аудио-ребру (anchor: партнёр+лаг из runner) ОТНОСИТЕЛЬНО уже разложенной
+       по TC камеры. Так рекордер ложится НЕПРЕРЫВНО (покрывает паузы между дублями), и
+       вырезание общих промежутков становится точным. Берём ОДНО сильное ребро к надёжному
+       источнику — без глобального солвера → без вырожденного схлопывания таймлайна. */
+    var ANCHOR_GATE = (opt.anchorGate != null) ? opt.anchorGate : 0.5;
+    function srcAnchorRef(path) { /* {start: старт ПОЛНОЙ огибающей источника на таймлайне, comp: его комната} */
+      for (var pk in planByKey) { if (!planByKey.hasOwnProperty(pk)) continue;
+        if (pk.indexOf(path + '|') !== 0) continue;
+        var pp = planByKey[pk]; if (!pp.devPlaced && !pp.placedAnchor) continue;
+        var cc = clipByKey[pk]; if (!cc) continue;
+        return { start: pp.targetFrames - (cc.inP || 0), comp: pp.comp };
+      }
+      return null;
+    }
+    var anchorChanged = true, anchorPass = 0, anchored = 0;
+    while (anchorChanged && anchorPass < 6) {
+      anchorChanged = false; anchorPass++;
+      for (var ak in planByKey) { if (!planByKey.hasOwnProperty(ak)) continue;
+        var ap = planByKey[ak]; if (ap.devPlaced || ap.placedAnchor) continue;
+        var an = ap.anchor; if (!an || (an.corr || 0) < ANCHOR_GATE) continue;
+        var ref = srcAnchorRef(an.path); if (ref == null) continue;
+        ap.targetFrames = ref.start + Math.round(an.offsetSec / FRAME);
+        ap.status = 'sync'; ap.placedAnchor = true; ap.comp = ref.comp; /* в комнату партнёра → двигаются вместе при секвенировании */
+        anchorChanged = true; anchored++;
       }
     }
 
@@ -224,6 +262,51 @@
       cursor = roomEnd;
     }
     syncedEndF = cursor;
+
+    /* ── ВЫРЕЗАНИЕ ОБЩИХ ПРОМЕЖУТКОВ (модель Syncaila: «вырезать → общие промежутки», вкл
+       по умолчанию) ──────────────────────────────────────────────────────────────────
+       После раскладки по реальному времени интервалы, где НЕ активен НИ один клип (общий
+       пробел — напр. режиссёр скомандовал «стоп», все камеры встали между дублями),
+       удаляются: всё правее сдвигается влево на размер пробела. Так Syncaila схлопывает
+       «мёртвое время», сохраняя взаимную синхронность (один и тот же сдвиг для всех клипов
+       в данной точке). Камеры одного события покрывают друг друга → реальные паузы внутри
+       одной камеры остаются (их закрывает другая камера), а общие простои исчезают. */
+    if (opt.removeCommonGaps !== false) {
+      var GAP_KEEP = Math.round((opt.keepGapSec != null ? opt.keepGapSec : 0) / FRAME);
+      var ivs = [];
+      for (var gi = 0; gi < clips.length; gi++) {
+        var gc = clips[gi];
+        if (gc.plan && gc.plan.status !== 'unsynced') ivs.push([gc.plan.start, gc.plan.end]);
+      }
+      if (ivs.length) {
+        ivs.sort(function (a, b) { return a[0] - b[0]; });
+        var cov = [[ivs[0][0], ivs[0][1]]];
+        for (var ci = 1; ci < ivs.length; ci++) {
+          var last = cov[cov.length - 1];
+          if (ivs[ci][0] <= last[1] + 1) { if (ivs[ci][1] > last[1]) last[1] = ivs[ci][1]; }
+          else cov.push([ivs[ci][0], ivs[ci][1]]);
+        }
+        /* карта накопленного выреза: brks[k] = [начало покрытого интервала, сдвиг до него] */
+        var cumShift = 0, prevEnd = cov[0][0], brks = [];
+        for (var bi = 0; bi < cov.length; bi++) {
+          var gap = cov[bi][0] - prevEnd;
+          if (gap > GAP_KEEP) cumShift += (gap - GAP_KEEP);
+          brks.push([cov[bi][0], cumShift]);
+          prevEnd = cov[bi][1];
+        }
+        var shiftAt = function (f) { var sh2 = 0; for (var k = 0; k < brks.length; k++) { if (f >= brks[k][0]) sh2 = brks[k][1]; else break; } return sh2; };
+        var newEnd = 0;
+        for (var pi = 0; pi < clips.length; pi++) {
+          var pc = clips[pi];
+          if (pc.plan && pc.plan.status !== 'unsynced') {
+            var sh = shiftAt(pc.plan.start);
+            pc.plan.start -= sh; pc.plan.end -= sh;
+            if (pc.plan.end > newEnd) newEnd = pc.plan.end;
+          }
+        }
+        syncedEndF = newEnd; cursor = newEnd;
+      }
+    }
 
     // несвязанные → ВПЛОТНУЮ в конец (без зазора), сохраняя взаимное расположение групп
     var umin = null;

@@ -25,7 +25,11 @@ async function main() {
     { extractEnvelope: dsp.AudioEnvelope.extractEnvelope },
     { refGate: 0.45, clipGate: 0.4, coarseWindowMs: 20 });
 
-  const res = T.applySyncToXml(xml, clips, rows, { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame });
+  const xopt = { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame };
+  if (process.env.REMOVE_GAPS === '0') xopt.removeCommonGaps = false;
+  if (process.env.KEEP_GAP) xopt.keepGapSec = parseFloat(process.env.KEEP_GAP);
+  if (process.env.ANCHOR_GATE) xopt.anchorGate = parseFloat(process.env.ANCHOR_GATE);
+  const res = T.applySyncToXml(xml, clips, rows, xopt);
   writeFileSync(OUT, res.xml, 'utf8');
   const s = res.stats;
   console.log(`_SYNCED: ${s.synced} клипов синхронно (0–${s.syncedEndSec}s)` +
