@@ -265,7 +265,7 @@
       var c = clips[a], p = planByKey[keyOf(c.path, c.start)];
       if (!p) { c.plan = null; continue; }
       var dur = c.end - c.start;
-      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp };
+      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp, conf: p.conf || 0 };
     }
 
     /* ── ПОСЛЕДОВАТЕЛЬНОСТЬ СЪЁМКИ ПО TIMECODE (модель Syncaila) ────────────────────
@@ -359,11 +359,73 @@
       }
     }
 
-    // несвязанные → ВПЛОТНУЮ в конец (без зазора), сохраняя взаимное расположение групп
-    var umin = null;
-    for (var g = 0; g < clips.length; g++) { var cg = clips[g]; if (cg.plan && cg.plan.status === 'unsynced') { if (umin === null || cg.plan.start < umin) umin = cg.plan.start; } }
-    var unsyncedShift = (umin === null) ? 0 : (syncedEndF - umin);
-    for (var h = 0; h < clips.length; h++) { var ch = clips[h]; if (ch.plan && ch.plan.status === 'unsynced') { ch.plan.start += unsyncedShift; ch.plan.end += unsyncedShift; } }
+    /* ── ДЕМОЦИЯ НАЛОЖЕНИЙ (модель Syncaila: не форсить неуверенный синк) ────────────────
+       На ФИНАЛЬНЫХ позициях (после раскладки комнат и вырезания общих промежутков): если два
+       клипа ОДНОЙ исходной дорожки (trackId → одна выходная <track>) ПЕРЕКРЫВАЮТСЯ, значит
+       хотя бы один поставлен НЕВЕРНО (обычно аудио-«мешок» рекордера с вырожденной корреляцией
+       коротких сегментов — ложный пик 0.4–0.5; либо позиционно-зависимый сдвиг вырезания
+       свёл их вместе). Premiere при импорте ВЫКИДЫВАЕТ перекрытый clipitem → клипы «теряются».
+       Оставляем клип с БОЛЬШЕЙ уверенностью, менее уверенный → unsynced (красный, встык в
+       конец — как Syncaila, консервативно метящая неуверенное красным вместо форс-раскладки).
+       Демотируем весь ИНСТАНС (все связанные A/V-копии с тем же path+start), чтобы не рвать
+       линковку. Кейсы без наложений (1/3/5) НЕ затрагиваются → нулевой риск регресса. */
+    if (opt.demoteOverlaps !== false) {
+      var demoteInstance = function (cl) {
+        for (var z = 0; z < clips.length; z++) {
+          var zc = clips[z];
+          if (zc.plan && zc.path === cl.path && zc.start === cl.start) zc.plan.status = 'unsynced';
+        }
+      };
+      var byTrack = {};
+      for (var oi = 0; oi < clips.length; oi++) {
+        var oc = clips[oi];
+        if (!oc.plan || oc.plan.status === 'unsynced' || oc.type !== 'audio') continue;
+        if (!byTrack[oc.trackId]) byTrack[oc.trackId] = [];
+        byTrack[oc.trackId].push(oc);
+      }
+      for (var tk2 in byTrack) { if (!byTrack.hasOwnProperty(tk2)) continue;
+        var arr = byTrack[tk2]; if (arr.length < 2) continue;
+        arr.sort(function (x, y) { return x.plan.start - y.plan.start; });
+        var kept = null;
+        for (var ii = 0; ii < arr.length; ii++) {
+          var cur = arr[ii];
+          if (cur.plan.status === 'unsynced') continue; /* уже демотирован как копия инстанса */
+          if (kept && cur.plan.start < kept.plan.end - 1) {
+            var keepCur = (cur.plan.conf || 0) > (kept.plan.conf || 0);
+            demoteInstance(keepCur ? kept : cur);
+            if (keepCur) kept = cur;
+          } else kept = cur;
+        }
+      }
+    }
+
+    /* несвязанные → В КОНЕЦ, ПОСЛЕДОВАТЕЛЬНО по инстансам (встык, без наложений). Раньше был
+       равномерный сдвиг, СОХРАНЯВШИЙ взаимные позиции — но если два несвязанных клипа ОДНОЙ
+       дорожки перекрывались изначально (аудио-«мешок» рекордера), они оставались внахлёст в
+       конце → Premiere выкидывал перекрытый = клипы «терялись». Теперь каждый ИНСТАНС
+       (path+start; связанные A/V-копии = один слот, общий старт → линковка цела) занимает
+       уникальный временной слот встык → наложений на любой дорожке физически нет. Порядок —
+       по исходной позиции (стабильно). Несвязанные = изолированные единицы без надёжного
+       взаимного синка, поэтому последовательная раскладка корректна (модель Syncaila). */
+    var uinst = {}, uorder2 = [];
+    for (var g = 0; g < clips.length; g++) {
+      var cg = clips[g]; if (!cg.plan || cg.plan.status !== 'unsynced') continue;
+      var ikey = cg.path + '|' + cg.start;
+      var cdur = cg.plan.end - cg.plan.start;
+      if (!uinst[ikey]) { uinst[ikey] = { origStart: cg.plan.start, dur: cdur, members: [] }; uorder2.push(ikey); }
+      uinst[ikey].members.push(cg);
+      if (cdur > uinst[ikey].dur) uinst[ikey].dur = cdur;
+    }
+    uorder2.sort(function (a, b) { return uinst[a].origStart - uinst[b].origStart; });
+    var ucursor = syncedEndF;
+    for (var uo2 = 0; uo2 < uorder2.length; uo2++) {
+      var inst = uinst[uorder2[uo2]];
+      for (var um = 0; um < inst.members.length; um++) {
+        var mdur = inst.members[um].plan.end - inst.members[um].plan.start;
+        inst.members[um].plan.start = ucursor; inst.members[um].plan.end = ucursor + mdur;
+      }
+      ucursor += inst.dur;
+    }
 
     // собрать ОДНУ секвенцию
     var synced = 0, unsynced = 0, endF = 0;
