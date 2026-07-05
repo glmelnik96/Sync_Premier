@@ -443,7 +443,12 @@
       var fidM = c.fullMatch.match(/<file id="([^"]+)"/);
       if (fidM) block = block.replace(/<masterclipid>[^<]*<\/masterclipid>/, '<masterclipid>' + fidM[1] + '</masterclipid>');
       if (c.plan.status === 'unsynced') {
-        block = block.replace(/<labels>[\s\S]*?<\/labels>/, '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>');
+        /* Rose-метка. У части clipitem в экспорте Premiere блока <labels> нет вовсе —
+           replace тогда молча не срабатывал и клип оставался без подсветки. Если блока
+           нет, вставляем его перед </clipitem>. */
+        var roseBlk = '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>';
+        if (/<labels>/.test(block)) block = block.replace(/<labels>[\s\S]*?<\/labels>/, roseBlk);
+        else block = block.replace(/(\s*)<\/clipitem>$/, '\n\t\t\t\t\t' + roseBlk + '$1</clipitem>');
         unsynced++;
       } else synced++;
       if (en > endF) endF = en;
