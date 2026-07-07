@@ -242,7 +242,11 @@
     function recorderKey(path) {
       var parts = String(path).split(/[/\\]/);            /* и '/', и Windows '\' */
       var name = parts[parts.length - 1].replace(/\.[^.]+$/, '');
-      var stem = name.replace(/_Tr\d+$/i, '').replace(/_(L|R)$/i, '');
+      /* _Tr1/_Tr2 — отдельные микрофоны; _TrLR — стерео-микс ТОГО ЖЕ рекордера (кейс 3:
+         ZOOM0007_TrLR + _Tr1 — один физический ZOOM, офсет 0). Без _TrLR в ключе _Tr1
+         оставался отдельным «устройством» и, не скоррелировавшись сам, падал в unsynced
+         (33252f мимо), хотя стерео-микс того же рекордера синкался идеально. */
+      var stem = name.replace(/_Tr(\d+|LR)$/i, '').replace(/_(L|R)$/i, '');
       return stem !== name ? 'REC:' + stem : path;
     }
     /* ключ УСТРОЙСТВА (камера/рекордер) = первый токен имени файла: A065_0718…_C071 → "A065",
@@ -271,15 +275,116 @@
          в DS раз (блочное среднее) так, чтобы самая длинная влезла в ~TARGET сэмплов. Тогда и
          попарный граф, и поклиповый матч идут на грубой шкале (dt×DS), позиции — с точностью
          ~dt×DS. Для типовых проектов (≤ порога) DS=1 → поведение НЕ меняется. */
-      var DS = 1;
+      var DS = 1, dtFull = dt;
       if (srcEnvs.length > (opt.maxFullMatch || 160)) {
         var maxLen = 0; for (var ml = 0; ml < srcEnvs.length; ml++) if (srcEnvs[ml].env.length > maxLen) maxLen = srcEnvs[ml].env.length;
         var TARGET = opt.coarseTarget || 40000;
         DS = Math.max(1, Math.ceil(maxLen / TARGET));
         if (DS > 1) {
-          for (var ds = 0; ds < srcEnvs.length; ds++) srcEnvs[ds].env = downsample(srcEnvs[ds].env, DS);
+          for (var ds = 0; ds < srcEnvs.length; ds++) { srcEnvs[ds].envFull = srcEnvs[ds].env; srcEnvs[ds].env = downsample(srcEnvs[ds].env, DS); }
           dt = dt * DS;
         }
+      }
+
+      /* ---- COARSE-TO-FINE (только при DS>1) ----
+         Прореженные огибающие речи ЛОЖНО похожи: у заведомо несвязанных источников
+         грубая NCC даёт 0.8+ (ловит общую макро-динамику речи), поэтому (а) грубая
+         corr непригодна как гейт честности связи, (б) позиция квантована DS·dt
+         (несколько кадров рассинхрона). Каждый значимый грубый матч перепроверяется
+         на ПОЛНОМ разрешении: до 3 проб (окна макс. энергии в третях шаблона)
+         по PROBE_SEC ищутся узкооконным NCC вокруг ожидаемого места; corr и позиция =
+         медианы по пробам. Ложный грубый пик на полном разрешении рассыпается
+         (corr→~0) → честный сигнал для красной маркировки; истинный — уточняет
+         позицию до dtFull. */
+      var PROBE_SEC = 5;
+      var probeNp = Math.max(50, Math.round(PROBE_SEC / dtFull));
+      var fineLag = 3 * DS + 5; /* грубая ошибка ±2-3 coarse-сэмпла + запас */
+      function medNum(a) { var b = a.slice().sort(function (p, q) { return p - q; }); return b[Math.floor(b.length / 2)]; }
+      function bestEnergyWindow(env, lo, hi, Np) {
+        var sum = 0, i;
+        for (i = lo; i < lo + Np; i++) sum += env[i];
+        var bst = sum, bi = lo;
+        for (i = lo + 1; i + Np <= hi; i++) { sum += env[i + Np - 1] - env[i - 1]; if (sum > bst) { bst = sum; bi = i; } }
+        return bi;
+      }
+      /* топ-энергетические окна в K долях шаблона (кэш на самом массиве — шаблон
+         юнита участвует в сотнях пар, пересканировать каждый раз дорого) */
+      var PROBES_K = 5;
+      function probesOf(env) {
+        if (env.__probes) return env.__probes;
+        var out = [];
+        if (env.length <= probeNp) out = [0];
+        else {
+          var part = Math.floor(env.length / PROBES_K);
+          if (part >= probeNp) { for (var z = 0; z < PROBES_K; z++) out.push(bestEnergyWindow(env, z * part, (z + 1) * part, probeNp)); }
+          else out = [bestEnergyWindow(env, 0, env.length, probeNp)];
+        }
+        env.__probes = out;
+        return out;
+      }
+      /* NCC окна шаблона tmpl[p0..p0+Np) против сигнала на позициях [sLo..sHi-Np];
+         среднее/дисперсия сигнала — скользящими суммами (O(1) на позицию). */
+      function probeNcc(sig, sLo, sHi, tmpl, p0, Np) {
+        var i, tm = 0, tv = 0;
+        for (i = 0; i < Np; i++) tm += tmpl[p0 + i];
+        tm /= Np;
+        for (i = 0; i < Np; i++) { var d0 = tmpl[p0 + i] - tm; tv += d0 * d0; }
+        var tstd = Math.sqrt(tv);
+        if (tstd < 1e-9) return null; /* проба-тишина */
+        var sumS = 0, sumS2 = 0;
+        for (i = sLo; i < sLo + Np; i++) { sumS += sig[i]; sumS2 += sig[i] * sig[i]; }
+        var bst = null;
+        for (var pos = sLo; pos + Np <= sHi; pos++) {
+          if (pos > sLo) { var po = sig[pos - 1], pn = sig[pos + Np - 1]; sumS += pn - po; sumS2 += pn * pn - po * po; }
+          var meanS = sumS / Np, varS = sumS2 - Np * meanS * meanS;
+          if (varS < 1e-12) continue;
+          var cc = 0;
+          for (i = 0; i < Np; i++) cc += sig[pos + i] * tmpl[p0 + i];
+          var ncc = (cc - Np * meanS * tm) / (Math.sqrt(varS) * tstd);
+          if (!bst || ncc > bst.corr) bst = { pos: pos, corr: ncc };
+        }
+        return bst;
+      }
+      /* → {posSec, corr} на полном разрешении, либо null (нет пригодных проб). */
+      function refineFine(sigFull, tmplFull, coarsePosSec) {
+        var exp0 = Math.round(coarsePosSec / dtFull);
+        var tLo = Math.max(0, -exp0), tHi = Math.min(tmplFull.length, sigFull.length - exp0);
+        var Np = probeNp;
+        if (tHi - tLo < Np) {
+          Np = tHi - tLo;
+          if (Np < Math.round(1 / dtFull)) return null; /* перекрытие < 1с — судить не о чем */
+        }
+        var cand = probesOf(tmplFull), probes = [];
+        for (var pc = 0; pc < cand.length; pc++) if (cand[pc] >= tLo && cand[pc] + Np <= tHi) probes.push(cand[pc]);
+        if (!probes.length) probes = [bestEnergyWindow(tmplFull, tLo, tHi, Np)];
+        var lags = [], corrs = [];
+        for (var pf = 0; pf < probes.length; pf++) {
+          var p0 = probes[pf];
+          var sLo = exp0 + p0 - fineLag, sHi = exp0 + p0 + Np + fineLag;
+          if (sLo < 0) sLo = 0;
+          if (sHi > sigFull.length) sHi = sigFull.length;
+          if (sHi - sLo < Np) continue;
+          var r = probeNcc(sigFull, sLo, sHi, tmplFull, p0, Np);
+          if (!r) continue;
+          lags.push(r.pos - (exp0 + p0));
+          corrs.push(r.corr);
+        }
+        if (!corrs.length) return null;
+        /* Консенсус лагов: истинный матч даёт одинаковый лаг на всех пробах.
+           На музыке пробы дают высокие corr на РАЗНЫХ ложных смещениях —
+           медиана corr обманчива. Оставляем только пробы, согласные с медианным
+           лагом (±3 сэмпла full-res); при одной пробе консенсус не проверить —
+           штрафуем corr. */
+        var mLag = medNum(lags);
+        var agLags = [], agCorrs = [];
+        for (var ag = 0; ag < lags.length; ag++) {
+          if (Math.abs(lags[ag] - mLag) <= 3) { agLags.push(lags[ag]); agCorrs.push(corrs[ag]); }
+        }
+        if (corrs.length >= 2 && agLags.length < 2) return { posSec: (exp0 + mLag) * dtFull, corr: 0 };
+        var cr = medNum(agCorrs);
+        if (corrs.length === 1) cr *= 0.85; /* одна проба — консенсус непроверяем */
+        else cr *= agLags.length / corrs.length; /* доля согласных проб */
+        return { posSec: (exp0 + medNum(agLags)) * dtFull, corr: cr };
       }
 
       /* 2. собрать референс-ЕДИНИЦЫ: дорожки одного рекордера → одна единица (несколько env). */
@@ -293,8 +398,8 @@
       var units = []; for (var uk in unitMap) if (unitMap.hasOwnProperty(uk)) units.push(unitMap[uk]);
       /* позиция клипа в единице = лучший матч по её дорожкам */
       function locateUnit(unit, clipEnv) {
-        var best = { posSec: 0, corr: -2 };
-        for (var t = 0; t < unit.tracks.length; t++) { var lr = locate(unit.tracks[t].env, clipEnv, dt); if (lr.corr > best.corr) best = lr; }
+        var best = { posSec: 0, corr: -2, track: null };
+        for (var t = 0; t < unit.tracks.length; t++) { var lr = locate(unit.tracks[t].env, clipEnv, dt); if (lr.corr > best.corr) best = { posSec: lr.posSec, corr: lr.corr, track: unit.tracks[t] }; }
         return best;
       }
       function unitCorr(uA, uB) { /* лучшая корреляция между дорожками двух единиц */
@@ -322,7 +427,15 @@
         var ra = units[x], rb = units[y];
         var bigU = ra.maxLen >= rb.maxLen ? ra : rb, smlU = ra.maxLen >= rb.maxLen ? rb : ra;
         var lr2 = locate(repTrack(bigU).env, repTrack(smlU).env, dt); /* posSec = старт smlU внутри bigU */
-        unitPairs.push({ a: bigU.key, b: smlU.key, offset: lr2.posSec, corr: unitCorr(ra, rb) }); /* time[big]=time[sml]+offset */
+        var pOff = lr2.posSec, pCorr = unitCorr(ra, rb);
+        /* coarse-to-fine ребра: честная corr (ложные грубые 0.8+ рассыпаются) +
+           точный офсет (иначе взаимное положение юнитов квантовано DS·dt) */
+        if (DS > 1 && pCorr >= refGate) {
+          var frP = refineFine(repTrack(bigU).envFull, repTrack(smlU).envFull, lr2.posSec);
+          if (frP) { pOff = frP.posSec; pCorr = frP.corr; }
+          else pCorr = 0; /* перепроверить нечем (тишина/нет перекрытия) → связи нет */
+        }
+        unitPairs.push({ a: bigU.key, b: smlU.key, offset: pOff, corr: pCorr }); /* time[big]=time[sml]+offset */
       }
       /* 3b. КОМНАТЫ через НАДЁЖНЫЕ связи (модель «А слышит Б, Б слышит рекордер»):
          • СИЛЬНОЕ ребро (corr≥strongGate) объединяет напрямую и ТРАНЗИТИВНО — чёткое
@@ -340,11 +453,32 @@
       function find(k) { while (parent[k] !== k) k = parent[k]; return k; }
       function offToRoot(k) { var s = 0; while (parent[k] !== k) { s += off[k]; k = parent[k]; } return s; }
       function uniteRoots(rA, rB, d) { parent[rB] = rA; off[rB] = d; } /* rootA_time = rootB_time + d */
-      /* сильные рёбра → прямое транзитивное объединение */
+      /* сильные рёбра → прямое транзитивное объединение, НО с верификацией консенсусом:
+         на музыке (банкет) сегменты рекордера дают ЛОЖНЫЕ corr 0.9+ (повторяющийся припев) —
+         одно такое ребро утаскивало Track 1_008 на 1500с. Истинное объединение подтверждается
+         ДРУГИМИ рёбрами между теми же группами (согласованный сдвиг); если несогласных рёбер
+         БОЛЬШЕ, чем согласных, — ребро ложное, пропускаем. Пары с единственным ребром
+         (кейсы 1–3) объединяются как раньше: возражений нет. */
+      function edgeConsensus(rA, rB, dd) { /* {support, contra} среди всех рёбер weakGate+ между группами rA и rB */
+        var support = 0, contra = 0;
+        for (var ce = 0; ce < edgesByCorr.length; ce++) {
+          var eC = edgesByCorr[ce];
+          var cA = find(eC.a), cB = find(eC.b);
+          var dC;
+          if (cA === rA && cB === rB) dC = eC.offset + offToRoot(eC.a) - offToRoot(eC.b);
+          else if (cA === rB && cB === rA) dC = -(eC.offset + offToRoot(eC.a) - offToRoot(eC.b));
+          else continue;
+          if (Math.abs(dC - dd) < mergeTol) support++; else contra++;
+        }
+        return { support: support, contra: contra };
+      }
       for (var se = 0; se < edgesByCorr.length; se++) {
         var ed = edgesByCorr[se]; if (ed.corr < strongGate) continue;
         var raR = find(ed.a), rbR = find(ed.b); if (raR === rbR) continue;
-        uniteRoots(raR, rbR, ed.offset + offToRoot(ed.a) - offToRoot(ed.b)); /* rootA = rootB + d */
+        var dU = ed.offset + offToRoot(ed.a) - offToRoot(ed.b); /* rootA = rootB + d */
+        var cons = edgeConsensus(raR, rbR, dU);
+        if (cons.contra > cons.support) continue; /* большинство рёбер даёт ДРУГОЙ сдвиг → ложный пик */
+        uniteRoots(raR, rbR, dU);
       }
       /* слабые рёбра → объединение только при корроборации ≥2 согласованных оценок сдвига */
       var changedRooms = true;
@@ -387,6 +521,7 @@
           if (ep.corr > unitRoomCorr[ep.b]) unitRoomCorr[ep.b] = ep.corr;
         }
       }
+      if (typeof opt.onGraph === 'function') opt.onGraph({ unitPairs: unitPairs, refInfo: refInfo, unitRoomCorr: unitRoomCorr });
 
       /* 4. каждый клип → лучшая по корреляции единица → позиция в часах её комнаты.
          ПРОИЗВОДИТЕЛЬНОСТЬ: при МНОГИХ источниках (300+) полный перебор клип×ВСЕ_единицы —
@@ -402,10 +537,12 @@
         refUnits = units.slice().sort(function (a, b) { return b.maxLen - a.maxLen; });
         refUnits = refUnits.slice(0, opt.maxRefs || 60);
       }
+      var CROSS_MINLEN = opt.crossMinLenSec || 15;
       var clips = (snapshot.clips || []).filter(function (c) { return c.trackType === 'audio' && c.mediaPath; });
       return mapSeries(clips, function (c) {
         return deps.extractEnvelope(c.mediaPath, { startSec: c.inPointSec, durSec: c.endSec - c.startSec, windowMs: coarseMs })
           .then(function (e) {
+            var fineEnv = e.env; /* полное разрешение — для coarse-to-fine перепроверки */
             var cenv = DS > 1 ? downsample(e.env, DS) : e.env;
             e = { env: cenv };
             var myDev = deviceKey(c.mediaPath);
@@ -414,18 +551,35 @@
             for (var ri = 0; ri < refUnits.length; ri++) {
               if (refUnits[ri].key === ownKey) ownSeen = true;
               var lr = locateUnit(refUnits[ri], e.env);
-              if (!best || lr.corr > best.corr) best = { unitKey: refUnits[ri].key, posSec: lr.posSec, corr: lr.corr };
+              if (!best || lr.corr > best.corr) best = { unitKey: refUnits[ri].key, posSec: lr.posSec, corr: lr.corr, track: lr.track };
               /* лучшее ребро к ДРУГОМУ устройству — якорь для непривязанных по таймкоду
                  клипов (аудио-бэг рекордера): ставятся относительно надёжно разложенной
                  камеры, минуя вырожденные часы компоненты. posSec = старт ин-поинта клипа
                  внутри ПОЛНОЙ огибающей источника-партнёра. */
-              if (refUnits[ri].dev !== myDev && (!cross || lr.corr > cross.corr))
-                cross = { partnerPath: refUnits[ri].repPath, posSec: lr.posSec, corr: lr.corr, partnerLenSec: refUnits[ri].maxLen * dt };
+              /* якорь только к ДОСТАТОЧНО ДЛИННОМУ партнёру: короткий референс (напр. 1с
+                 C027.braw в кейсе 4) скользит внутри длинного клипа и даёт ложный NCC-пик,
+                 утаскивая клип в мусор. Абсолютный порог отделяет ложные короткие партнёры
+                 (1–13с) от здоровых (20–89с). */
+              if (refUnits[ri].dev !== myDev && refUnits[ri].maxLen * dt >= CROSS_MINLEN &&
+                  (!cross || lr.corr > cross.corr))
+                cross = { partnerPath: refUnits[ri].repPath, posSec: lr.posSec, corr: lr.corr, partnerLenSec: refUnits[ri].maxLen * dt, track: lr.track };
             }
             /* собственная единица не попала в референсы (большой N) → self-shortcut:
                клип сидит в своём источнике на позиции inPoint, self-corr=1 → побеждает. */
             if (!ownSeen && unitMap[ownKey] && (!best || best.corr < 1))
-              best = { unitKey: ownKey, posSec: c.inPointSec, corr: 1 };
+              best = { unitKey: ownKey, posSec: c.inPointSec, corr: 1, track: null };
+            /* coarse-to-fine: перепроверка матчей клипа на полном разрешении
+               (self-shortcut без track — позиция и так точная). */
+            if (DS > 1) {
+              if (best && best.track && best.track.envFull) {
+                var fb = refineFine(best.track.envFull, fineEnv, best.posSec);
+                if (fb) { best.posSec = fb.posSec; best.corr = fb.corr; } else best.corr = 0;
+              }
+              if (cross && cross.track && cross.track.envFull) {
+                var fx = refineFine(cross.track.envFull, fineEnv, cross.posSec);
+                if (fx) { cross.posSec = fx.posSec; cross.corr = fx.corr; } else cross.corr = 0;
+              }
+            }
             return { clip: c, best: best, cross: cross };
           });
       }).then(function (matched) {
@@ -479,11 +633,64 @@
           ucur += grp.dur + GAP;
         }
 
+        /* UNIT-уровневый якорь: НАДЁЖНОЕ ребро юнита к юниту ДРУГОГО устройства.
+           Per-clip cross считается по КУСКУ клипа и на длинных рекордерах бывает слабым
+           (Track 1_008: 0.37), тогда как ребро ПОЛНЫХ огибающих — 0.94: трансформу для
+           пере-якоривания после device-TC нужна именно связь юнита, иначе рекордер
+           остаётся на до-TC координатах (+1500с). НО одиночному ребру доверять нельзя
+           (ZOOM Tr1: ложное 0.68 утаскивало трек на -1129с — комнатная логика ему уже
+           не доверяла). Правила те же, что при слиянии комнат: берём ребро, только если
+           ЕГО ПОЗИЦИЯ подтверждена вторым независимым партнёром (кластер согласных
+           implied-позиций) ЛИБО ребро одиночное, но очень сильное (corr≥0.8). */
+        var unitBestEdge = {};
+        (function () {
+          var perUnit = {};
+          for (var ue = 0; ue < unitPairs.length; ue++) {
+            var eb = unitPairs[ue];
+            if (!(eb.corr > 0)) continue;
+            var uA = unitMap[eb.a], uB = unitMap[eb.b];
+            if (uA.dev === uB.dev) continue; /* якорь только к другому физическому устройству */
+            /* edge: start(sml=b) = start(big=a) + offset → старт a внутри b = -offset */
+            if (!perUnit[eb.a]) perUnit[eb.a] = [];
+            if (!perUnit[eb.b]) perUnit[eb.b] = [];
+            perUnit[eb.a].push({ partner: eb.b, corr: eb.corr, startInPartner: -eb.offset, partnerLenSec: uB.maxLen * dt, partnerPath: uB.repPath });
+            perUnit[eb.b].push({ partner: eb.a, corr: eb.corr, startInPartner: eb.offset, partnerLenSec: uA.maxLen * dt, partnerPath: uA.repPath });
+          }
+          var LONE_GATE = 0.8, CLUSTER_TOL = 3.0, LONE_MINLEN = 20.0;
+          for (var pu in perUnit) { if (!perUnit.hasOwnProperty(pu)) continue;
+            var edges = perUnit[pu], best = null;
+            for (var ei0 = 0; ei0 < edges.length; ei0++) {
+              var ei = edges[ei0], riP = refInfo[ei.partner]; if (!riP) continue;
+              /* implied-старт юнита в координатах комнаты партнёра */
+              var impI = riP.off + ei.startInPartner;
+              var support = 0, top = ei, seenP = {};
+              for (var ej0 = 0; ej0 < edges.length; ej0++) {
+                var ej = edges[ej0], rjP = refInfo[ej.partner];
+                if (!rjP || rjP.clockId !== riP.clockId) continue;
+                if (Math.abs((rjP.off + ej.startInPartner) - impI) >= CLUSTER_TOL) continue;
+                if (!seenP[ej.partner]) { seenP[ej.partner] = 1; support++; }
+                if (ej.corr > top.corr) top = ej;
+              }
+              if (support < 2 && top.corr < LONE_GATE) continue;
+              /* КОРОТКИЙ партнёр = ложный NCC-пик, утаскивает клип в мусор (кейс 4
+                 _017/018/022/002 → 1.2с C027.braw). Короткий референс даёт широкий пик и
+                 ложную кластер-поддержку от других коротких клипов того же устройства,
+                 поэтому длину проверяем БЕЗУСЛОВНО, а не только для одиночных рёбер. */
+              if (!(top.partnerLenSec >= LONE_MINLEN)) continue;
+              if (!best || top.corr > best.corr)
+                best = { corr: top.corr, startInPartner: top.startInPartner, partnerLenSec: top.partnerLenSec, partnerPath: top.partnerPath };
+            }
+            if (best) unitBestEdge[pu] = best;
+          }
+        })();
         var rows = [];
         for (var n = 0; n < matched.length; n++) {
           var x2 = matched[n], c2 = x2.clip;
           var aCorr = (x2.best && unitRoomCorr[x2.best.unitKey] != null) ? unitRoomCorr[x2.best.unitKey] : 0;
           var anc = x2.cross ? { path: x2.cross.partnerPath, offsetSec: x2.cross.posSec, corr: x2.cross.corr, partnerLenSec: x2.cross.partnerLenSec } : null;
+          var ube = unitBestEdge[recorderKey(c2.mediaPath)];
+          if (ube && (!anc || ube.corr > anc.corr))
+            anc = { path: ube.partnerPath, offsetSec: ube.startInPartner + c2.inPointSec, corr: ube.corr, partnerLenSec: ube.partnerLenSec };
           if (x2.connected) {
             var target = roomStart[x2.clockId] + (x2.roomTarget - minByClock[x2.clockId]);
             if (target < 0) target = 0;
