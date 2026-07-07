@@ -260,12 +260,54 @@
       }
     }
 
+    /* ── ДЕТЕКТ STRETCH-КАМЕРЫ → Rose (модель Syncaila: не подтверждённое звуком — красным) ──
+       Жёсткий TC валиден, ТОЛЬКО если TC камеры event-линеен (реальные позиции ~пропорц. TC).
+       Если истинное событие РАСТЯНУТО относительно TC (камера снимала с длинными паузами/сбросами:
+       реального времени между записями БОЛЬШЕ, чем в таймкоде), rigid-TC-блок раскладывает камеру
+       неверно (кейс 5: P-камера, TC-span 84мин, а Syncaila растягивает на 270мин). Такую камеру
+       наш звук подтвердить не может (кросс-девайс пины редки и часть даёт ложный NCC-пик на длинном
+       рекордере) → весь блок метим Rose (не подтверждён звуком), ПОЗИЦИИ НЕ ТРОГАЕМ (0 наложений).
+       Детект: доверенные пины (сильный якорь corr≥0.65 к ДЛИННОМУ ≥90с КРОСС-девайс бэкбону, не той
+       же камере) дают implied-span (реальные позиции) / TC-span > 1.5. Линейные камеры (кейсы 1-4,
+       ratio 0.2–1.25) НЕ затрагиваются → нулевой риск регресса; проверено по всем 5 кейсам. */
+    var rosePaths = {};
+    if (opt.roseStretch !== false) {
+      var devTok = function (path) { var b = String(path).split(/[\/\\]/).pop().replace(/\.[^.]*$/, ''); var i = b.indexOf('_'); return i > 0 ? b.slice(0, i) : b; };
+      for (var sg in devGroups) if (devGroups.hasOwnProperty(sg)) {
+        var sfiles = devGroups[sg]; if (sfiles.length < 3) continue;
+        var allDevS = true;
+        for (var si = 0; si < sfiles.length; si++) if (!sfiles[si].plan.devPlaced) { allDevS = false; break; }
+        if (!allDevS) continue; /* только надёжно-TC камеры */
+        var camClip0 = clipByKey[sfiles[0].key]; if (!camClip0) continue;
+        var camTok = devTok(camClip0.path), spins = [];
+        for (var sj = 0; sj < sfiles.length; sj++) {
+          var sf = sfiles[sj], sa = sf.plan.anchor;
+          if (!sa || (sa.corr || 0) < 0.65 || !(sa.partnerLenSec >= 90)) continue;
+          if (devTok(sa.path) === camTok) continue; /* только кросс-девайс бэкбон */
+          var pst = placedSrcStart2(sa.path); if (pst == null) continue;
+          spins.push({ tcF: Math.round(sf.tcStart / FRAME), pos: pst + Math.round(sa.offsetSec / FRAME) });
+        }
+        if (spins.length < 3) continue;
+        var mnT = Infinity, mxT = -Infinity, mnP = Infinity, mxP = -Infinity;
+        for (var sp = 0; sp < spins.length; sp++) {
+          var t = spins[sp].tcF, po = spins[sp].pos;
+          if (t < mnT) mnT = t; if (t > mxT) mxT = t; if (po < mnP) mnP = po; if (po > mxP) mxP = po;
+        }
+        var tcSpan = mxT - mnT, posSpan = mxP - mnP;
+        if (tcSpan <= 0 || posSpan / tcSpan <= 1.5) continue; /* линейна — rigid-TC валиден */
+        /* STRETCH → вся камера Rose (по path: video + связанные audio-копии) */
+        for (var sk2 = 0; sk2 < sfiles.length; sk2++) {
+          var cc2 = clipByKey[sfiles[sk2].key]; if (cc2) rosePaths[cc2.path] = 1;
+        }
+      }
+    }
+
     // план каждого clipitem: позиция = targetFrames; in/out = ОРИГИНАЛ (полная длина).
     for (var a = 0; a < clips.length; a++) {
       var c = clips[a], p = planByKey[keyOf(c.path, c.start)];
       if (!p) { c.plan = null; continue; }
       var dur = c.end - c.start;
-      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp, conf: p.conf || 0 };
+      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp, conf: p.conf || 0, rose: !!rosePaths[c.path] };
     }
 
     /* ── ПОСЛЕДОВАТЕЛЬНОСТЬ СЪЁМКИ ПО TIMECODE (модель Syncaila) ────────────────────
@@ -442,15 +484,17 @@
          унифицирует всё в file id. Переписываем masterclipid в file id ЭТОГО clipitem. */
       var fidM = c.fullMatch.match(/<file id="([^"]+)"/);
       if (fidM) block = block.replace(/<masterclipid>[^<]*<\/masterclipid>/, '<masterclipid>' + fidM[1] + '</masterclipid>');
-      if (c.plan.status === 'unsynced') {
-        /* Rose-метка. У части clipitem в экспорте Premiere блока <labels> нет вовсе —
-           replace тогда молча не срабатывал и клип оставался без подсветки. Если блока
-           нет, вставляем его перед </clipitem>. */
+      /* Rose-метка ставится в ДВУХ случаях: (1) unsynced-клип (сброшен в конец, красный);
+         (2) stretch-камера (plan.rose) — клип ОСТАЁТСЯ на своей rigid-TC позиции (status='sync'),
+         но помечен красным как «не подтверждён звуком» (модель Syncaila). У части clipitem в
+         экспорте Premiere блока <labels> нет вовсе — replace тогда молча не срабатывал; если
+         блока нет, вставляем перед </clipitem>. */
+      if (c.plan.status === 'unsynced' || c.plan.rose) {
         var roseBlk = '<labels>\n\t\t\t\t\t\t<label2>Rose</label2>\n\t\t\t\t\t</labels>';
         if (/<labels>/.test(block)) block = block.replace(/<labels>[\s\S]*?<\/labels>/, roseBlk);
         else block = block.replace(/(\s*)<\/clipitem>$/, '\n\t\t\t\t\t' + roseBlk + '$1</clipitem>');
-        unsynced++;
-      } else synced++;
+      }
+      if (c.plan.status === 'unsynced') unsynced++; else synced++;
       if (en > endF) endF = en;
       return block;
     }
