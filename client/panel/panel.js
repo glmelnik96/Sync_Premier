@@ -41,7 +41,24 @@
         { refGate: 0.45, clipGate: 0.4, coarseWindowMs: 20 })
         .then(function (rows) {
           setStatus('3/4 · Сборка синхро-секвенции…', 'busy');
-          var res = T.applySyncToXml(xml, parsed.clips, rows, { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame });
+          var xopt = { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame };
+          var res = T.applySyncToXml(xml, parsed.clips, rows, xopt);
+          /* Ф3.1: stretch-камера (record-run TC) → band-pass скан + warp-раскладка (pass 2) */
+          var pass2 = Promise.resolve(res);
+          if (res.stretch) {
+            setStatus('3/4 · Растянутая камера: warp-раскладка по звуку…', 'busy');
+            pass2 = window.StretchWarp.computeTargets(res.stretch,
+              { extractEnvelope: window.AudioEnvelope.extractEnvelope, SyncCore: window.SyncCore })
+              .then(function (sw) {
+                var hasT = false; for (var k in sw.targets) { if (sw.targets.hasOwnProperty(k)) { hasT = true; break; } }
+                if (!hasT) return res;
+                xopt.stretchTargets = sw.targets;
+                return T.applySyncToXml(xml, parsed.clips, rows, xopt);
+              });
+          }
+          return pass2;
+        })
+        .then(function (res) {
           var outPath = exp.path.replace(/sync_premier_in\.xml$/, 'sync_premier_out.xml');
           fs.writeFileSync(outPath, res.xml, 'utf8');
 

@@ -55,7 +55,9 @@
     return { dtSec: win / sr, env: env };
   }
 
-  /** Извлечь огибающую из аудиофайла (опц. сегмент [startSec, durSec], опц. windowMs). */
+  /** Извлечь огибающую из аудиофайла (опц. сегмент [startSec, durSec], опц. windowMs).
+   *  opt.bandPass: true → полосовой фильтр речи 150–4000 Гц (Ф3.1: подавляет ветер/гул
+   *  накамерного микрофона stretch-камеры; для базового пайплайна НЕ используется). */
   function extractEnvelope(path, opt) {
     opt = opt || {};
     var winMs = (typeof opt.windowMs === 'number') ? opt.windowMs : WINDOW_MS;
@@ -66,7 +68,9 @@
       var args = ['-hide_banner', '-nostats', '-v', 'error'];
       if (opt.startSec != null) args.push('-ss', String(opt.startSec));
       if (opt.durSec != null) args.push('-t', String(opt.durSec));
-      args.push('-i', path, '-map', '0:a:0?', '-vn', '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', '-');
+      args.push('-i', path, '-map', '0:a:0?', '-vn');
+      if (opt.bandPass) args.push('-af', 'highpass=f=150,lowpass=f=4000');
+      args.push('-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', '-');
       var execFile = require('child_process').execFile;
       execFile(bin, args, { timeout: 600000, maxBuffer: 1024 * 1024 * 1024, encoding: 'buffer' },
         function (err, stdout) {

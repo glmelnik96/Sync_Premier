@@ -25,13 +25,14 @@ export function loadDsp() {
   };
   ctx.global = ctx; ctx.window = ctx; ctx.globalThis = ctx;
   vm.createContext(ctx);
-  for (const f of ['sync-core.js', 'sync-graph.js', 'track-extractor.js', 'audio-envelope.js', 'sync-runner.js', 'fcpxml-transform.js']) {
+  for (const f of ['sync-core.js', 'sync-graph.js', 'track-extractor.js', 'audio-envelope.js', 'sync-runner.js', 'stretch-warp.js', 'fcpxml-transform.js']) {
     vm.runInContext(readFileSync(resolve(sharedDir, f), 'utf8'), ctx, { filename: f });
   }
   return {
     SyncCore: ctx.SyncCore,
     SyncGraph: ctx.SyncGraph,
     SyncRunner: ctx.SyncRunner,
+    StretchWarp: ctx.StretchWarp,
     AudioEnvelope: ctx.AudioEnvelope,
     TrackExtractor: ctx.TrackExtractor,
     FcpXmlTransform: ctx.FcpXmlTransform

@@ -29,7 +29,16 @@ async function main() {
   if (process.env.REMOVE_GAPS === '0') xopt.removeCommonGaps = false;
   if (process.env.KEEP_GAP) xopt.keepGapSec = parseFloat(process.env.KEEP_GAP);
   if (process.env.ANCHOR_GATE) xopt.anchorGate = parseFloat(process.env.ANCHOR_GATE);
-  const res = T.applySyncToXml(xml, clips, rows, xopt);
+  let res = T.applySyncToXml(xml, clips, rows, xopt);
+  /* Ф3.1: stretch-камера (record-run TC, событие растянуто) → warp-раскладка по звуку */
+  if (res.stretch && process.env.STRETCH_WARP !== '0') {
+    console.log('stretch-камера обнаружена — band-pass скан и warp-раскладка…');
+    const sw = await dsp.StretchWarp.computeTargets(res.stretch,
+      { extractEnvelope: dsp.AudioEnvelope.extractEnvelope, SyncCore: dsp.SyncCore });
+    console.log('stretch-warp: ' + sw.report);
+    if (Object.keys(sw.targets).length)
+      res = T.applySyncToXml(xml, clips, rows, { ...xopt, stretchTargets: sw.targets });
+  }
   writeFileSync(OUT, res.xml, 'utf8');
   const s = res.stats;
   console.log(`_SYNCED: ${s.synced} клипов синхронно (0–${s.syncedEndSec}s)` +

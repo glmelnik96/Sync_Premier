@@ -307,7 +307,7 @@
        Детект: доверенные пины (сильный якорь corr≥0.65 к ДЛИННОМУ ≥90с КРОСС-девайс бэкбону, не той
        же камере) дают implied-span (реальные позиции) / TC-span > 1.5. Линейные камеры (кейсы 1-4,
        ratio 0.2–1.25) НЕ затрагиваются → нулевой риск регресса; проверено по всем 5 кейсам. */
-    var rosePaths = {};
+    var rosePaths = {}, stretchDevices = []; /* Ф3.1: экспорт stretch-инфо для warp снаружи */
     if (opt.roseStretch !== false) {
       var devTok = function (path) { var b = String(path).split(/[\/\\]/).pop().replace(/\.[^.]*$/, ''); var i = b.indexOf('_'); return i > 0 ? b.slice(0, i) : b; };
       for (var sg in devGroups) if (devGroups.hasOwnProperty(sg)) {
@@ -336,6 +336,43 @@
         for (var sk2 = 0; sk2 < sfiles.length; sk2++) {
           var cc2 = clipByKey[sfiles[sk2].key]; if (cc2) rosePaths[cc2.path] = 1;
         }
+        /* Ф3.1: экспорт данных для warp-раскладки (StretchWarp.computeTargets, pass 2).
+           Файлы камеры (шаблоны скана) + бэкбоны ТОЙ ЖЕ комнаты (общие координаты
+           targetFrames): кросс-девайс источники ≥90с с размещённым стартом. */
+        var devComp = sfiles[0].plan.comp, exFiles = [];
+        for (var sx = 0; sx < sfiles.length; sx++) {
+          var cx = clipByKey[sfiles[sx].key]; if (!cx) continue;
+          exFiles.push({ key: sfiles[sx].key, path: cx.path, tcStartSec: sfiles[sx].tcStart,
+            inSec: (cx.inP || 0) * FRAME, durSec: sfiles[sx].durFrames * FRAME });
+        }
+        var bbSeen = {}, exBbs = [];
+        for (var sy = 0; sy < clips.length; sy++) {
+          var cy = clips[sy];
+          /* bbSeen ставим только при добавлении: первый невалидный инстанс пути
+             не должен отсекать валидный второй */
+          if (!cy.path || bbSeen[cy.path] || !(cy.srcDurSec >= 90)) continue;
+          if (devTok(cy.path) === camTok) continue;
+          var py = planByKey[keyOf(cy.path, cy.start)];
+          if (!py || py.status === 'unsynced' || py.comp !== devComp) continue;
+          var st2 = placedSrcStart2(cy.path); if (st2 == null) continue;
+          bbSeen[cy.path] = 1;
+          exBbs.push({ path: cy.path, srcStartSec: st2 * FRAME, srcDurSec: cy.srcDurSec });
+        }
+        if (exFiles.length && exBbs.length) stretchDevices.push({ files: exFiles, backbones: exBbs });
+      }
+    }
+    /* ── Ф3.1: WARP-ПОЗИЦИИ STRETCH-КАМЕРЫ (pass 2) ─────────────────────────────────────
+       opt.stretchTargets = { 'path|start': targetFrames } — позиции из StretchWarp
+       (пины по звуку + TC-цепочка ведущего блока + warp-интерполяция) в координатах
+       targetFrames комнаты (те же, что экспортированные srcStartSec бэкбонов). Применяется
+       ДО раскладки комнат и заморозки gap-карты: сдвиги на минуты-часы требуют полной
+       пересборки покрытия (postShift для этого не годится). Только devPlaced-клипы
+       (rigid-TC stretch-камеры) — чужие ключи игнорируются. Rose-метка камеры сохраняется:
+       детект выше не зависит от позиций самой камеры. */
+    if (opt.stretchTargets) {
+      for (var stK in opt.stretchTargets) if (opt.stretchTargets.hasOwnProperty(stK)) {
+        var stp = planByKey[stK];
+        if (stp && stp.devPlaced) stp.targetFrames = opt.stretchTargets[stK];
       }
     }
 
@@ -735,6 +772,10 @@
     return { xml: out, stats: { synced: synced, unsynced: unsynced, tcRescued: rescued,
       syncedEndSec: Math.round(syncedEndF * FRAME), unsyncedEndSec: Math.round(endF * FRAME),
       hasUnsynced: unsynced > 0 },
+      /* Ф3.1: обнаруженные stretch-камеры. Если непусто и opt.stretchTargets не передан —
+         вызывающий код может сделать pass 2: StretchWarp.computeTargets(result.stretch, io)
+         → повторный applySyncToXml с opt.stretchTargets. */
+      stretch: stretchDevices.length ? { frameSec: FRAME, devices: stretchDevices } : null,
       /* Ф2.1: ЗАМОРОЖЕННАЯ раскладка для пост-коррекций (Ф2.2/Ф3.1). Чтобы подвинуть
          инстанс на Δ кадров, НЕ трогая соседей: newRaw = rawStartByKey[key] + Δ;
          финал = newRaw − gapShiftAt(newRaw). Либо повторный applySyncToXml с теми же
