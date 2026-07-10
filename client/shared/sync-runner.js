@@ -138,7 +138,9 @@
           var M = templSrc.env.length;
           var padded = padSignal(signalSrc.env, M);
           var res = SC.globalNccPeak(padded, templSrc.env);
-          var offsetSec = (res.lag - M) * dt;   /* signal_time = templ_time + offsetSec */
+          /* lagFrac — субсэмпловый пик (парабола); фолбэк на целый lag */
+          var resLag = (res.lagFrac != null) ? res.lagFrac : res.lag;
+          var offsetSec = (resLag - M) * dt;   /* signal_time = templ_time + offsetSec */
           /* pair {a:signal, b:templ, offset}: time[a]=time[b]+offset */
           pairs.push({ a: signalSrc.path, b: templSrc.path, offset: offsetSec, corr: res.corr });
         }
@@ -235,7 +237,9 @@
     function locate(sFull, tEnv, dt) {
       var M = tEnv.length;
       var r = SC.globalNccPeak(pad(sFull, M), tEnv);
-      return { posSec: (r.lag - M) * dt, corr: r.corr };
+      /* позиция в секундах — по субсэмпловому lagFrac (фолбэк на целый lag) */
+      var rLag = (r.lagFrac != null) ? r.lagFrac : r.lag;
+      return { posSec: (rLag - M) * dt, corr: r.corr };
     }
     /* ключ многоканального рекордера: ZOOM0002_Tr1.wav / ZOOM0002_Tr2.wav → "REC:ZOOM0002".
        Дорожки одного рекордера синхронны по определению (офсет 0) → одна референс-единица. */

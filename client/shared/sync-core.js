@@ -134,29 +134,44 @@
 
   /**
    * Глобальный поиск позиции шаблона t внутри сигнала s через FFT + пооконную
-   * нормализацию (NCC, аналог matchTemplate). O(N log N). Возвращает {lag, corr∈[-1,1]}.
-   * lag — индекс в s, где начинается лучшее совпадение t.
+   * нормализацию (NCC, аналог matchTemplate). O(N log N).
+   * Возвращает {lag, corr∈[-1,1], lagFrac}.
+   * lag — ЦЕЛЫЙ индекс в s, где начинается лучшее совпадение t (безопасен как
+   * индекс массива); lagFrac — субсэмпловое уточнение пика параболой по трём
+   * точкам NCC (как в normXCorr), |lagFrac − lag| ≤ 0.5 — для конверсии в секунды.
    */
   function globalNccPeak(s, t) {
     var M = t.length, N = s.length, i;
-    if (M > N || M === 0) return { lag: 0, corr: -1 };
+    if (M > N || M === 0) return { lag: 0, corr: -1, lagFrac: 0 };
     var raw = rawXCorrFFT(s, t);
     var ps = new Float64Array(N + 1), ps2 = new Float64Array(N + 1);
     for (i = 0; i < N; i++) { ps[i + 1] = ps[i] + s[i]; ps2[i + 1] = ps2[i] + s[i] * s[i]; }
     var meanT = 0; for (i = 0; i < M; i++) meanT += t[i]; meanT /= M;
     var varT = 0; for (i = 0; i < M; i++) varT += (t[i] - meanT) * (t[i] - meanT);
     var stdT = Math.sqrt(varT);
-    if (stdT < 1e-9) return { lag: 0, corr: 0 }; /* шаблон-тишина */
-    var best = { lag: 0, corr: -2 };
-    for (var lag = 0; lag + M <= N; lag++) {
+    if (stdT < 1e-9) return { lag: 0, corr: 0, lagFrac: 0 }; /* шаблон-тишина */
+    function nccAt(lag) {
       var sumS = ps[lag + M] - ps[lag];
       var sumS2 = ps2[lag + M] - ps2[lag];
       var meanS = sumS / M;
       var varS = sumS2 - M * meanS * meanS;
       var stdS = Math.sqrt(varS > 0 ? varS : 1e-12);
-      var ncc = (raw[lag] - M * meanS * meanT) / ((stdS * stdT) || 1e-12);
+      return (raw[lag] - M * meanS * meanT) / ((stdS * stdT) || 1e-12);
+    }
+    var best = { lag: 0, corr: -2 };
+    for (var lag = 0; lag + M <= N; lag++) {
+      var ncc = nccAt(lag);
       if (ncc > best.corr) best = { lag: lag, corr: ncc };
     }
+    /* парабола по соседним NCC (только если оба соседа в допустимом диапазоне лагов) */
+    var sub = 0;
+    if (best.lag > 0 && best.lag + 1 + M <= N) {
+      var cm = nccAt(best.lag - 1), cp = nccAt(best.lag + 1);
+      var d = cm - 2 * best.corr + cp;
+      if (Math.abs(d) > 1e-12) sub = 0.5 * (cm - cp) / d;
+      if (sub > 0.5) sub = 0.5; else if (sub < -0.5) sub = -0.5;
+    }
+    best.lagFrac = best.lag + sub;
     return best;
   }
 
