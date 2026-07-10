@@ -190,7 +190,7 @@
        якорем: файлом с МАКС реальной корреляцией к комнате (anchorCorr). Аудио-позиции
        отдельных файлов НЕ используем (короткий файл неоднозначно коррелирует с длинным
        рекордером → кластеризация и схлопывание пауз — была причина «таймлайн поломан»). */
-    var rescued = 0;
+    var rescued = 0, meshTracks = []; /* mesh (Ф2.2): отбракованные «мешки» для сессионной пост-коррекции */
     for (var tg in devGroups) if (devGroups.hasOwnProperty(tg)) {
       var files = devGroups[tg]; if (files.length < 2) continue; /* одиночный файл — оставляем аудио */
       /* НАДЁЖНОЕ TC-устройство = файлы с РАЗНЫМИ таймкодами (реальная камера: TC уникальны и
@@ -198,7 +198,7 @@
          — НЕ устройство; его не раскладываем по TC, а притягиваем по звуку к камерам (ниже). */
       var tcSeen = {}, distinct = 0;
       for (var ti = 0; ti < files.length; ti++) { var tk = Math.round(files[ti].tcStart / FRAME); if (!tcSeen[tk]) { tcSeen[tk] = 1; distinct++; } }
-      if (distinct < files.length) continue;
+      if (distinct < files.length) { meshTracks.push(files); continue; }
       /* якорь = файл с макс anchorCorr (реальная связь с комнатой, не self-match) */
       var anchor = null;
       for (var fi = 0; fi < files.length; fi++) {
@@ -448,6 +448,108 @@
       var rwc = clips[rw]; if (!rwc.plan || rwc.plan.status === 'unsynced') continue;
       rawStartByKey[keyOf(rwc.path, rwc.start)] = rwc.plan.start;
     }
+    /* ── Ф2.2: СЕССИОННАЯ РАСКЛАДКА «МЕШКА» ПО СБРОСАМ TC (пост-коррекция) ──────────────
+       «Мешок» (Track 1: рекордер с повторными tc=0) отбракован rigid-TC-блоком, его клипы
+       ставились КАЖДЫЙ по своему аудио-якорю. Но внутри ОДНОЙ сессии записи (между сбросами
+       TC) клок непрерывен → позиция = база + TC. Клип, чей аудио-якорь ложный (фантомный
+       NCC-пик), выпадает из TC-консенсуса сессии на десятки секунд — его возвращаем на
+       base+TC от МЕДИАННОЙ базы сессии (робастно: битых меньшинство). Работает ПОСЛЕ
+       заморозки gap-карты → соседи НЕ двигаются (инвариант Ф2.1). Файлы с ДУБЛИРОВАННЫМ TC
+       внутри сессии (tc=0 повторно) TC-неоднозначны → не участвуют и не корректируются.
+       Сессии без консенсуса (≥2 согласных, большинство) не трогаем. Кейсы без мешков —
+       строгий no-op. */
+    if (opt.sessionLayout !== false && meshTracks.length) {
+      var SESS_TOL_F = Math.round((opt.sessionTolSec != null ? opt.sessionTolSec : 10) / FRAME);
+      var sessShift = {}; /* key → Δкадров (сырые координаты) */
+      /* TC рекордера — record-run (паузы невидимы в TC), но его паузы = ОБЩИЕ паузы →
+         вырезаются gap-картой. Инвариант pos−tc≈const держится в ФИНАЛЬНЫХ координатах
+         (после вырезания), не в сырых → резидуалы считаем через shiftAt, обратно в raw —
+         фикс-поинтом (shiftAt неубывающая ступенька → итерация монотонно сходится). */
+      var shiftAtF = gapMap ? gapMap.shiftAt : function () { return 0; };
+      var rawFromFinal = function (fin) {
+        /* минимальный R с R−shiftAt(R) ≥ fin; R−shiftAt(R) неубывающая → бинарный поиск */
+        var lo = fin, hi = fin + shiftAtF(9e15) + 1;
+        while (lo < hi) {
+          var mid = Math.floor((lo + hi) / 2);
+          if (mid - shiftAtF(mid) >= fin) hi = mid; else lo = mid + 1;
+        }
+        return lo;
+      };
+      for (var mt = 0; mt < meshTracks.length; mt++) {
+        var mfiles = meshTracks[mt];
+        /* сессии: сброс TC (падение ниже предыдущего) = новая сессия записи */
+        var sessions = [], curS = null, prevTc = null;
+        for (var mf = 0; mf < mfiles.length; mf++) {
+          var mfl = mfiles[mf];
+          if (prevTc == null || mfl.tcStart < prevTc - 0.5) { curS = []; sessions.push(curS); }
+          curS.push(mfl); prevTc = mfl.tcStart;
+        }
+        for (var se = 0; se < sessions.length; se++) {
+          var sess = sessions[se]; if (sess.length < 3) continue;
+          /* дубли TC внутри сессии → неоднозначны, исключаем */
+          var tcCnt = {};
+          for (var sd = 0; sd < sess.length; sd++) {
+            var tf0 = Math.round(sess[sd].tcStart / FRAME);
+            tcCnt[tf0] = (tcCnt[tf0] || 0) + 1;
+          }
+          /* резидуал = ФИНАЛЬНАЯ позиция − TC(кадры); только sync-клипы с уникальным TC */
+          var resids = [];
+          for (var sm = 0; sm < sess.length; sm++) {
+            sess[sm].resid = null; sess[sm].tcF = Math.round(sess[sm].tcStart / FRAME);
+            if (tcCnt[sess[sm].tcF] > 1) continue;
+            var mc = clipByKey[sess[sm].key];
+            if (!mc || !mc.plan || mc.plan.status === 'unsynced') continue;
+            sess[sm].rawStart = mc.plan.start;
+            sess[sm].resid = (mc.plan.start - shiftAtF(mc.plan.start)) - sess[sm].tcF;
+            resids.push(sess[sm].resid);
+          }
+          if (resids.length < 3) continue;
+          resids.sort(function (x, y) { return x - y; });
+          var med = resids[Math.floor(resids.length / 2)];
+          /* консенсус: согласные с медианой (в допуске) — минимум 2 и большинство */
+          var agree = 0;
+          for (var sg2 = 0; sg2 < sess.length; sg2++)
+            if (sess[sg2].resid != null && Math.abs(sess[sg2].resid - med) <= SESS_TOL_F) agree++;
+          if (agree < 2 || agree * 2 < resids.length) continue;
+          /* занятые ФИНАЛЬНЫЕ интервалы здоровых членов сессии (одна исходная дорожка):
+             record-run TC кладёт файлы ВСТЫК, ±50f шума базы дают нахлёст → демоция.
+             Корректируемый клип клампится в свободный зазор (малый сдвиг ≤5с), иначе skip. */
+          var occ = [];
+          for (var oh = 0; oh < sess.length; oh++) {
+            if (sess[oh].resid == null || Math.abs(sess[oh].resid - med) > SESS_TOL_F) continue;
+            var ofs = sess[oh].resid + sess[oh].tcF;
+            occ.push([ofs, ofs + sess[oh].durFrames]);
+          }
+          var CLAMP_MAX = Math.round(5 / FRAME);
+          for (var sc2 = 0; sc2 < sess.length; sc2++) {
+            if (sess[sc2].resid == null) continue;
+            if (Math.abs(sess[sc2].resid - med) <= SESS_TOL_F) continue;
+            /* желаемая ФИНАЛЬНАЯ позиция = медианная база + TC, клампится в зазор */
+            var wantFin = med + sess[sc2].tcF, durF2 = sess[sc2].durFrames;
+            var loB = 0, hiB = Infinity;
+            for (var ok2 = 0; ok2 < occ.length; ok2++) {
+              var os2 = occ[ok2][0], oe2 = occ[ok2][1];
+              if (oe2 <= wantFin) { if (oe2 > loB) loB = oe2; }
+              else if (os2 >= wantFin + durF2) { if (os2 < hiB) hiB = os2; }
+              else if (os2 >= wantFin) { if (os2 < hiB) hiB = os2; }
+              else { if (oe2 > loB) loB = oe2; }
+            }
+            if (loB > hiB - durF2) continue; /* зазора нет — не форсим (демоция хуже) */
+            var fin2 = wantFin < loB ? loB : (wantFin > hiB - durF2 ? hiB - durF2 : wantFin);
+            if (Math.abs(fin2 - wantFin) > CLAMP_MAX) continue;
+            var wantRaw = rawFromFinal(fin2);
+            sessShift[sess[sc2].key] = wantRaw - sess[sc2].rawStart;
+          }
+        }
+      }
+      /* применить ко всем копиям инстанса (линковка A/V цела) */
+      for (var sa2 = 0; sa2 < clips.length; sa2++) {
+        var sac = clips[sa2]; if (!sac.plan || sac.plan.status === 'unsynced') continue;
+        var sdz = sessShift[keyOf(sac.path, sac.start)];
+        if (sdz) { sac.plan.start += sdz; sac.plan.end += sdz; }
+      }
+    }
+
     /* ── ПОСТ-КОРРЕКЦИИ (Ф2.1 → Ф2.2/Ф3.1): точечный сдвиг инстанса ПОСЛЕ заморозки
        карты. opt.postShiftByKey = { 'path|start': Δкадров } в «сырых» координатах.
        Coverage уже зафиксирован → сдвиг НЕ меняет карту → соседи НЕ двигаются
