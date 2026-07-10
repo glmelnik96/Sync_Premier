@@ -247,6 +247,12 @@
          оставался отдельным «устройством» и, не скоррелировавшись сам, падал в unsynced
          (33252f мимо), хотя стерео-микс того же рекордера синкался идеально. */
       var stem = name.replace(/_Tr(\d+|LR)$/i, '').replace(/_(L|R)$/i, '');
+      /* Подкаст-рекордеры (RODECaster и т.п.): «Podcast 16 - Mic 1/Mic 2/Stereo Mix» —
+         дорожки одного мультитрек-экспорта (идентичная длительность, офсет 0). Кейс 6:
+         Mic 2 отдельным «устройством» имел одно слабое ребро 0.646<LONE_GATE и падал
+         в unsynced, хотя его офсет к Stereo Mix того же рекордера был точным (0.00с). */
+      if (stem === name)
+        stem = name.replace(/\s*-\s*(Mic\s*\d+|Stereo\s*Mix|Sound\s*Pads?|USB|Phone|Bluetooth)$/i, '');
       return stem !== name ? 'REC:' + stem : path;
     }
     /* ключ УСТРОЙСТВА (камера/рекордер) = первый токен имени файла: A065_0718…_C071 → "A065",
@@ -256,6 +262,9 @@
     function deviceKey(path) {
       var parts = String(path).split(/[/\\]/);
       var name = parts[parts.length - 1].replace(/\.[^.]+$/, '');
+      /* дорожки подкаст-рекордера («… - Mic 2», «… - Stereo Mix») = ОДНО устройство:
+         иначе клип «кросс»-якорился бы к соседней дорожке своего же рекордера. */
+      name = name.replace(/\s*-\s*(Mic\s*\d+|Stereo\s*Mix|Sound\s*Pads?|USB|Phone|Bluetooth)$/i, '');
       var us = name.indexOf('_');
       return us > 0 ? name.slice(0, us) : name;
     }
