@@ -95,10 +95,47 @@
   }
 
 
+  /** ── КАРТА ВЫРЕЗАНИЯ ОБЩИХ ПРОМЕЖУТКОВ (Ф2.1: выделено и заморожено) ──────────────
+      intervals=[[startF,endF],...] (позиции ПОСЛЕ раскладки комнат) → {brks, shiftAt}.
+      brks[k] = [начало покрытого интервала, накопленный вырез до него];
+      shiftAt(f) — сколько кадров вычесть из позиции f.
+      Карта строится ОДИН РАЗ по базовым позициям и «замораживается»: пост-коррекции
+      (Ф2.2 сегментация Track 1, Ф3.1 warp P-камеры) двигают клип, применяя ТУ ЖЕ карту
+      к новой позиции — coverage НЕ перестраивается, иначе локальный фикс двигает соседей. */
+  function buildGapShiftMap(intervals, keepF) {
+    if (!intervals || !intervals.length) return null;
+    var ivs = intervals.slice();
+    ivs.sort(function (a, b) { return a[0] - b[0]; });
+    var cov = [[ivs[0][0], ivs[0][1]]];
+    for (var ci = 1; ci < ivs.length; ci++) {
+      var last = cov[cov.length - 1];
+      if (ivs[ci][0] <= last[1] + 1) { if (ivs[ci][1] > last[1]) last[1] = ivs[ci][1]; }
+      else cov.push([ivs[ci][0], ivs[ci][1]]);
+    }
+    /* карта накопленного выреза */
+    var cumShift = 0, prevEnd = cov[0][0], brks = [];
+    for (var bi = 0; bi < cov.length; bi++) {
+      var gap = cov[bi][0] - prevEnd;
+      if (gap > keepF) cumShift += (gap - keepF);
+      brks.push([cov[bi][0], cumShift]);
+      prevEnd = cov[bi][1];
+    }
+    return {
+      brks: brks,
+      shiftAt: function (f) { var sh2 = 0; for (var k = 0; k < brks.length; k++) { if (f >= brks[k][0]) sh2 = brks[k][1]; else break; } return sh2; }
+    };
+  }
+
   /**
    * Применить результаты синхронизации (rows из runClipSync) к XML.
    * rows: [{nodeId, targetSec, status('sync'|'unsynced'|...), component}]
    * → выходной xmeml с _SYNCED и (если есть несвязанные) _UNSYNCED.
+   *
+   * Ф2.1 (инвариант «локальный фикс не двигает соседей»):
+   * - opt.postShiftByKey = { 'path|start': Δкадров } — точечный сдвиг инстанса ПОСЛЕ
+   *   заморозки карты выреза (соседи гарантированно не двигаются);
+   * - result.layout — замороженная раскладка (roomOffsets, rawStartByKey, gapBrks,
+   *   gapShiftAt) для пост-коррекций Ф2.2/Ф3.1 снаружи.
    */
   function applySyncToXml(xml, clips, rows, opt) {
     opt = opt || {};
@@ -307,7 +344,11 @@
       var c = clips[a], p = planByKey[keyOf(c.path, c.start)];
       if (!p) { c.plan = null; continue; }
       var dur = c.end - c.start;
-      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp, conf: p.conf || 0, rose: !!rosePaths[c.path] };
+      /* core (Ф2.1) = «уверенное ядро» комнаты: клип rigid-TC устройства (devPlaced).
+         placedAnchor/плейн-клипы (Track 1 и пр.) зависят от аудио-рёбер и именно их будут
+         двигать пост-коррекции Ф2.2 → в ядро origin их пускать нельзя. Комнаты, где есть
+         placedAnchor, всегда содержат devPlaced (цепочка якорения стартует от rigid-TC). */
+      c.plan = { start: p.targetFrames, end: p.targetFrames + dur, status: p.status, comp: p.comp, conf: p.conf || 0, rose: !!rosePaths[c.path], core: !!p.devPlaced };
     }
 
     /* ── ПОСЛЕДОВАТЕЛЬНОСТЬ СЪЁМКИ ПО TIMECODE (модель Syncaila) ────────────────────
@@ -317,42 +358,67 @@
        комнаты» = tcStart(якорь) − (позиция якоря внутри комнаты). Комнаты раскладываются
        в порядке этого времени, ВПЛОТНУЮ (back-to-back, как Syncaila). Обобщается на любой
        источник с timecode; комнаты без TC сохраняют исходный относительный порядок. */
-    var rooms = {}; /* comp → {clips:[], minStart} */
+    var rooms = {}; /* comp → {clips:[], minStart, coreMin} */
     for (var e = 0; e < clips.length; e++) {
       var ce = clips[e]; if (!ce.plan || ce.plan.status === 'unsynced') continue;
       var cmp = ce.plan.comp;
-      if (!rooms[cmp]) rooms[cmp] = { comp: cmp, clips: [], minStart: ce.plan.start };
+      if (!rooms[cmp]) rooms[cmp] = { comp: cmp, clips: [], minStart: null, coreMin: null };
       rooms[cmp].clips.push(ce);
-      if (ce.plan.start < rooms[cmp].minStart) rooms[cmp].minStart = ce.plan.start;
+      if (rooms[cmp].minStart == null || ce.plan.start < rooms[cmp].minStart) rooms[cmp].minStart = ce.plan.start;
+      /* СТАБИЛЬНЫЙ ORIGIN (Ф2.1): origin комнаты считаем ТОЛЬКО по «уверенному ядру»
+         (core = devPlaced). Иначе точечный фикс одного битого клипа менял minStart и
+         уносил ВСЮ комнату (эксперимент 2026-07-07: 13 идеальных соседей на +2218f). */
+      if (ce.plan.core && (rooms[cmp].coreMin == null || ce.plan.start < rooms[cmp].coreMin)) rooms[cmp].coreMin = ce.plan.start;
     }
     var roomList = [];
     for (var rc in rooms) if (rooms.hasOwnProperty(rc)) {
       var rm = rooms[rc], anchor = null;
+      /* origin: ядро, если есть; иначе — как раньше, min по всем клипам комнаты */
+      rm.origin = (rm.coreMin != null) ? rm.coreMin : rm.minStart;
       for (var ai = 0; ai < rm.clips.length; ai++) {
         var cl = rm.clips[ai];
         if (cl.tcStartSec == null) continue;
         if (!anchor || (cl.srcDurSec || 0) > (anchor.srcDurSec || 0)) anchor = cl;
       }
-      rm.impliedSec = anchor ? (anchor.tcStartSec - (anchor.plan.start - rm.minStart) * FRAME) : null;
+      rm.impliedSec = anchor ? (anchor.tcStartSec - (anchor.plan.start - rm.origin) * FRAME) : null;
       roomList.push(rm);
     }
     /* комнаты с TC — по impliedSec; без TC — после, в исходном относительном порядке */
     var BIG = 1e12;
     roomList.sort(function (a, b) {
-      var ka = (a.impliedSec == null) ? (BIG + a.minStart) : a.impliedSec;
-      var kb = (b.impliedSec == null) ? (BIG + b.minStart) : b.impliedSec;
+      var ka = (a.impliedSec == null) ? (BIG + a.origin) : a.impliedSec;
+      var kb = (b.impliedSec == null) ? (BIG + b.origin) : b.impliedSec;
       return ka - kb;
     });
-    /* разложить последовательно back-to-back, сохраняя внутрикомнатные позиции */
-    var cursor = 0, syncedEndF = 0;
+    /* разложить последовательно back-to-back, сохраняя внутрикомнатные позиции.
+       Клип с plan.start < origin ядра получает ОТРИЦАТЕЛЬНУЮ относительную позицию —
+       это допустимо (не тянем origin по одному клипу); курсор клампим ПО КОМНАТЕ:
+       выброс влево не откатывает курсор назад. */
+    var cursor = 0, syncedEndF = 0, roomOffsets = {}; /* comp → off (Ф2.1: экспорт для пост-коррекций) */
     for (var ri = 0; ri < roomList.length; ri++) {
-      var room = roomList[ri], off = cursor - room.minStart, roomEnd = 0;
+      var room = roomList[ri], off = cursor - room.origin, roomEnd = cursor;
       for (var rj = 0; rj < room.clips.length; rj++) {
         var rcl = room.clips[rj];
         rcl.plan.start += off; rcl.plan.end += off;
         if (rcl.plan.end > roomEnd) roomEnd = rcl.plan.end;
       }
-      cursor = roomEnd;
+      roomOffsets[room.comp] = off;
+      if (roomEnd > cursor) cursor = roomEnd;
+    }
+    /* нормализация: если из-за core-origin кто-то ушёл в минус (клип левее ядра первой
+       комнаты) — единый сдвиг ВСЕХ sync-клипов вправо (взаимные позиции не меняются) */
+    var minAllF = null;
+    for (var nz = 0; nz < clips.length; nz++) {
+      var ncz = clips[nz]; if (!ncz.plan || ncz.plan.status === 'unsynced') continue;
+      if (minAllF == null || ncz.plan.start < minAllF) minAllF = ncz.plan.start;
+    }
+    if (minAllF != null && minAllF < 0) {
+      for (var nz2 = 0; nz2 < clips.length; nz2++) {
+        var ncz2 = clips[nz2]; if (!ncz2.plan || ncz2.plan.status === 'unsynced') continue;
+        ncz2.plan.start -= minAllF; ncz2.plan.end -= minAllF;
+      }
+      cursor -= minAllF;
+      for (var rk2 in roomOffsets) if (roomOffsets.hasOwnProperty(rk2)) roomOffsets[rk2] -= minAllF;
     }
     syncedEndF = cursor;
 
@@ -364,42 +430,46 @@
        «мёртвое время», сохраняя взаимную синхронность (один и тот же сдвиг для всех клипов
        в данной точке). Камеры одного события покрывают друг друга → реальные паузы внутри
        одной камеры остаются (их закрывает другая камера), а общие простои исчезают. */
+    var GAP_KEEP = Math.round((opt.keepGapSec != null ? opt.keepGapSec : 0) / FRAME);
+    var gapMap = null;
     if (opt.removeCommonGaps !== false) {
-      var GAP_KEEP = Math.round((opt.keepGapSec != null ? opt.keepGapSec : 0) / FRAME);
       var ivs = [];
       for (var gi = 0; gi < clips.length; gi++) {
         var gc = clips[gi];
         if (gc.plan && gc.plan.status !== 'unsynced') ivs.push([gc.plan.start, gc.plan.end]);
       }
-      if (ivs.length) {
-        ivs.sort(function (a, b) { return a[0] - b[0]; });
-        var cov = [[ivs[0][0], ivs[0][1]]];
-        for (var ci = 1; ci < ivs.length; ci++) {
-          var last = cov[cov.length - 1];
-          if (ivs[ci][0] <= last[1] + 1) { if (ivs[ci][1] > last[1]) last[1] = ivs[ci][1]; }
-          else cov.push([ivs[ci][0], ivs[ci][1]]);
-        }
-        /* карта накопленного выреза: brks[k] = [начало покрытого интервала, сдвиг до него] */
-        var cumShift = 0, prevEnd = cov[0][0], brks = [];
-        for (var bi = 0; bi < cov.length; bi++) {
-          var gap = cov[bi][0] - prevEnd;
-          if (gap > GAP_KEEP) cumShift += (gap - GAP_KEEP);
-          brks.push([cov[bi][0], cumShift]);
-          prevEnd = cov[bi][1];
-        }
-        var shiftAt = function (f) { var sh2 = 0; for (var k = 0; k < brks.length; k++) { if (f >= brks[k][0]) sh2 = brks[k][1]; else break; } return sh2; };
-        var newEnd = 0;
-        for (var pi = 0; pi < clips.length; pi++) {
-          var pc = clips[pi];
-          if (pc.plan && pc.plan.status !== 'unsynced') {
-            var sh = shiftAt(pc.plan.start);
-            pc.plan.start -= sh; pc.plan.end -= sh;
-            if (pc.plan.end > newEnd) newEnd = pc.plan.end;
-          }
-        }
-        syncedEndF = newEnd; cursor = newEnd;
+      /* карта строится по БАЗОВЫМ позициям (до пост-коррекций) и замораживается */
+      gapMap = buildGapShiftMap(ivs, GAP_KEEP);
+    }
+    /* rawStartByKey (Ф2.1): «сырые» позиции инстансов ПОСЛЕ раскладки комнат, ДО
+       пост-коррекций и вырезания — точка отсчёта для Ф2.2/Ф3.1 (см. result.layout) */
+    var rawStartByKey = {};
+    for (var rw = 0; rw < clips.length; rw++) {
+      var rwc = clips[rw]; if (!rwc.plan || rwc.plan.status === 'unsynced') continue;
+      rawStartByKey[keyOf(rwc.path, rwc.start)] = rwc.plan.start;
+    }
+    /* ── ПОСТ-КОРРЕКЦИИ (Ф2.1 → Ф2.2/Ф3.1): точечный сдвиг инстанса ПОСЛЕ заморозки
+       карты. opt.postShiftByKey = { 'path|start': Δкадров } в «сырых» координатах.
+       Coverage уже зафиксирован → сдвиг НЕ меняет карту → соседи НЕ двигаются
+       (инвариант «локальный фикс не двигает соседей»). */
+    if (opt.postShiftByKey) {
+      for (var ps = 0; ps < clips.length; ps++) {
+        var psc = clips[ps]; if (!psc.plan || psc.plan.status === 'unsynced') continue;
+        var pdz = opt.postShiftByKey[keyOf(psc.path, psc.start)];
+        if (pdz) { psc.plan.start += pdz; psc.plan.end += pdz; }
       }
     }
+    /* применить ЗАМОРОЖЕННУЮ карту ко ВСЕМ клипам по их (возможно скорректированной) позиции */
+    var newEnd = 0;
+    for (var pi = 0; pi < clips.length; pi++) {
+      var pc = clips[pi]; if (!pc.plan || pc.plan.status === 'unsynced') continue;
+      if (gapMap) {
+        var sh = gapMap.shiftAt(pc.plan.start);
+        pc.plan.start -= sh; pc.plan.end -= sh;
+      }
+      if (pc.plan.end > newEnd) newEnd = pc.plan.end;
+    }
+    if (newEnd > 0) { syncedEndF = newEnd; cursor = newEnd; }
 
     /* ── ДЕМОЦИЯ НАЛОЖЕНИЙ (модель Syncaila: не форсить неуверенный синк) ────────────────
        На ФИНАЛЬНЫХ позициях (после раскладки комнат и вырезания общих промежутков): если два
@@ -562,11 +632,23 @@
     var out = xmlHead + wrapped + xmlTail;
     return { xml: out, stats: { synced: synced, unsynced: unsynced, tcRescued: rescued,
       syncedEndSec: Math.round(syncedEndF * FRAME), unsyncedEndSec: Math.round(endF * FRAME),
-      hasUnsynced: unsynced > 0 } };
+      hasUnsynced: unsynced > 0 },
+      /* Ф2.1: ЗАМОРОЖЕННАЯ раскладка для пост-коррекций (Ф2.2/Ф3.1). Чтобы подвинуть
+         инстанс на Δ кадров, НЕ трогая соседей: newRaw = rawStartByKey[key] + Δ;
+         финал = newRaw − gapShiftAt(newRaw). Либо повторный applySyncToXml с теми же
+         rows и opt.postShiftByKey = { key: Δ } (эквивалентно, плюс демоция наложений). */
+      layout: {
+        roomOffsets: roomOffsets,       /* comp → off: raw = targetFrames + off */
+        rawStartByKey: rawStartByKey,   /* 'path|start' → raw-старт (до выреза) */
+        gapBrks: gapMap ? gapMap.brks : [],
+        gapShiftAt: gapMap ? gapMap.shiftAt : function () { return 0; },
+        keepGapFrames: GAP_KEEP, frameSec: FRAME
+      } };
   }
 
   global.FcpXmlTransform = {
     SECOND_TICKS: SECOND_TICKS,
-    deriveRate: deriveRate, parseXml: parseXml, buildSnapshot: buildSnapshot, applySyncToXml: applySyncToXml
+    deriveRate: deriveRate, parseXml: parseXml, buildSnapshot: buildSnapshot, applySyncToXml: applySyncToXml,
+    buildGapShiftMap: buildGapShiftMap
   };
 })(typeof window !== 'undefined' ? window : this);
