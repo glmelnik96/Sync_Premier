@@ -3,13 +3,13 @@
  * без Node-зависимостей). Используется и панелью (гибрид), и standalone CLI.
  *
  * Поток: parseXml(xml) → buildSnapshot(clips) → [SyncRunner.runClipSync даёт rows] →
- * applySyncToXml(xml, clips, rows) → выходной XML с двумя секвенциями (_SYNCED + _UNSYNCED).
+ * applySyncToXml(xml, clips, rows) → выходной XML с ОДНОЙ секвенцией _SYNCED
+ * (несвязанные клипы — вплотную в конец, помечены Rose).
  *
  * Ключевые уроки (каждый — реальный баг на живом импорте Premiere):
  * - Premiere читает pproTicksIn/Out (тики), ИГНОРИРУЯ <in>/<out> → обновлять оба.
- * - Несвязанные клипы НЕЛЬЗЯ держать в той же секвенции (Premiere обрезает длительность
- *   по концу синхронного контента) → отдельная секвенция _UNSYNCED.
- * - Дубль sequence id → Premiere импортирует одну → уникальный id+суффикс на 2-й.
+ * - Несвязанные клипы с ЗАЗОРОМ в конце → Premiere обрезает длительность по концу
+ *   синхронного контента → ставим вплотную (без зазора), в той же секвенции.
  */
 (function (global) {
   'use strict';
@@ -129,7 +129,7 @@
   /**
    * Применить результаты синхронизации (rows из runClipSync) к XML.
    * rows: [{nodeId, targetSec, status('sync'|'unsynced'|...), component}]
-   * → выходной xmeml с _SYNCED и (если есть несвязанные) _UNSYNCED.
+   * → выходной xmeml с одной секвенцией _SYNCED (несвязанные — в конец, Rose).
    *
    * Ф2.1 (инвариант «локальный фикс не двигает соседей»):
    * - opt.postShiftByKey = { 'path|start': Δкадров } — точечный сдвиг инстанса ПОСЛЕ

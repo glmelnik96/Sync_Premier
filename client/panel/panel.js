@@ -17,8 +17,8 @@
 
   /* ГИБРИД-ПАЙПЛАЙН (FCP7 XML round-trip, БЕЗ мутации живого таймлайна):
      host экспортирует активную секвенцию в FCP7 XML → панель парсит, гоняет DSP
-     (ffmpeg-огибающие + FFT-NCC + граф комнат), пишет синхро-XML (две секвенции
-     _SYNCED + опц. _UNSYNCED) → host importFiles → Premiere строит свежие секвенции.
+     (ffmpeg-огибающие + FFT-NCC + граф комнат), пишет синхро-XML (одна секвенция
+     _SYNCED, несвязанные — в конец, Rose) → host importFiles → Premiere строит секвенцию.
      Это снимает все проблемы move()-подхода (длительность, плейхед, развал). */
   btn.addEventListener('click', function () {
     var T = window.FcpXmlTransform;

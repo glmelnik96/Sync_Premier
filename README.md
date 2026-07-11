@@ -182,7 +182,7 @@ RMS-огибающая, граф комнат (resolveComponents), per-clip си
   - `sync-graph.js` — граф комнат, офсеты, компоненты связности.
   - `sync-runner.js` — `runClipSync` (per-clip синхронизация, модель Syncaila).
   - `audio-envelope.js` — ffmpeg → RMS-огибающая (кросс-платформенный поиск ffmpeg).
-  - `fcpxml-transform.js` — парс/сборка FCP7 XML (две секвенции, очистка, pproTicks).
+  - `fcpxml-transform.js` — парс/сборка FCP7 XML (секвенция _SYNCED, Rose-метки, pproTicks).
   - `bridge-premiere.js` — мост панель↔host (export/import).
 - `client/panel/` — UI (index.html, panel.js, styles.css).
 - `host/premiere-sync.jsx` — ExtendScript-host (`$._SYNC_`): export + import.
