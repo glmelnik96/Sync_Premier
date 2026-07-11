@@ -37,7 +37,7 @@ async function main() {
       { extractEnvelope: dsp.AudioEnvelope.extractEnvelope, SyncCore: dsp.SyncCore });
     console.log('stretch-warp: ' + sw.report);
     if (Object.keys(sw.targets).length)
-      res = T.applySyncToXml(xml, clips, rows, { ...xopt, stretchTargets: sw.targets });
+      res = T.applySyncToXml(xml, clips, rows, { ...xopt, stretchTargets: sw.targets, stretchPinned: sw.pinned });
   }
   writeFileSync(OUT, res.xml, 'utf8');
   const s = res.stats;

@@ -53,6 +53,7 @@
                 var hasT = false; for (var k in sw.targets) { if (sw.targets.hasOwnProperty(k)) { hasT = true; break; } }
                 if (!hasT) return res;
                 xopt.stretchTargets = sw.targets;
+                xopt.stretchPinned = sw.pinned;
                 return T.applySyncToXml(xml, parsed.clips, rows, xopt);
               });
           }

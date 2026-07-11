@@ -20,8 +20,11 @@
  *     к ПЕРВОМУ пину (off = P[0].off — выведено из данных, совпало с моделью Syncaila);
  *     между пинами → линейная интерполяция offset(tc); правее последнего → его офсет.
  *
- * Позиции клипов camera остаются «не подтверждёнными звуком» в терминах Syncaila →
- * вся камера по-прежнему метится Rose (fcpxml-transform), но раскладка близка к истинной.
+ * Rose-семантика (модель Syncaila: Rose = не подтверждено звуком). Снимаем Rose
+ * (pinned→opt.stretchPinned) ТОЛЬКО с пинов доверенных классов — одиночный @0.70 и левое
+ * расширение (0 промахов на кейсе 5). Консенсус-пины (3/22 мимо, до 3.7ч: коррелированная
+ * среда даёт согласный ложный пик даже на разных устройствах) и пины уплотнения @0.45
+ * (9/48 мимо) остаются Rose, как и chain/warp-интерполированные — монтажёр знает, где проверять.
  *
  * ES5 IIFE, без Node-зависимостей в топ-уровне (ffmpeg — через переданный extractEnvelope).
  */
@@ -60,9 +63,19 @@
     var out = [];
     for (i = 0; i < keep.length; i++) {
       var s = sel[keep[i]];
-      out.push({ key: s.key, tc: s.tc, tl: s.tl, off: s.tl - s.tc });
+      out.push({ key: s.key, tc: s.tc, tl: s.tl, off: s.tl - s.tc, trusted: s.trusted });
     }
     return out;
+  }
+
+  /* токен устройства по имени файла (как в fcpxml-transform): ZOOM0009_Tr1 → ZOOM0009.
+     Консенсус требует РАЗНЫХ устройств: дорожки одного рекордера — почти дубликаты
+     сигнала, их «согласие» не независимо. (Ложные консенсусы кейса 5 это НЕ убрало —
+     среда коррелирует пики и между устройствами — но требование строго корректнее.) */
+  function devTok(path) {
+    var b = String(path).split(/[\/\\]/).pop().replace(/\.[^.]*$/, '');
+    var i = b.indexOf('_');
+    return i > 0 ? b.slice(0, i) : b;
   }
 
   /* глобальный NCC-пик шаблона в сигнале (как sync-runner.locate: pad нулями на M) */
@@ -79,12 +92,13 @@
    *   { frameSec, devices: [{ files: [{key, path, tcStartSec, inSec, durSec}],
    *                           backbones: [{path, srcStartSec, srcDurSec}] }] }
    * io: { extractEnvelope, SyncCore }
-   * → Promise<{ targets: {key → targetFrames}, report: строка-сводка }>
+   * → Promise<{ targets: {key → targetFrames}, pinned: {key → 1 для ДОВЕРЕННЫХ пинов
+   *   (подтверждены звуком → без Rose)}, report: строка-сводка }>
    */
   function computeTargets(stretchInfo, io) {
     var FRAME = stretchInfo.frameSec;
     var extract = io.extractEnvelope, SyncCore = io.SyncCore;
-    var targets = {}, notes = [];
+    var targets = {}, pinned = {}, notes = [];
 
     function processDevice(dev) {
       /* 1. огибающие бэкбонов (band-pass, полные) */
@@ -133,18 +147,20 @@
           if (sc.segDur < PIN_MIN_DUR || sc.tc == null) continue;
           var strong = [];
           for (sj = 0; sj < sc.cands.length; sj++) if (sc.cands[sj].corr >= PIN_CONS_TH) strong.push(sc.cands[sj]);
-          var pin = null;
+          var pin = null, cons = 0;
           for (var a = 0; a < strong.length && !pin; a++)
             for (var b = a + 1; b < strong.length; b++)
-              if (strong[b].bb !== strong[a].bb && Math.abs(strong[a].tl - strong[b].tl) <= CONS_TOL) {
-                pin = (strong[a].tl + strong[b].tl) / 2; break;
+              if (devTok(strong[b].bb) !== devTok(strong[a].bb) && Math.abs(strong[a].tl - strong[b].tl) <= CONS_TOL) {
+                pin = (strong[a].tl + strong[b].tl) / 2; cons = 1; break;
               }
           if (pin == null) {
             var best = null;
             for (sj = 0; sj < strong.length; sj++) if (!best || strong[sj].corr > best.corr) best = strong[sj];
             if (best && best.corr >= PIN_SINGLE_TH) pin = best.tl;
           }
-          if (pin != null) sel.push({ key: sc.key, tc: sc.tc, tl: pin });
+          /* trusted (снятие Rose) = одиночный @0.70: 0 промахов; консенсус НЕ доверен
+             (среда даёт согласный ложный пик, 3/22 мимо до 3.7ч) */
+          if (pin != null) sel.push({ key: sc.key, tc: sc.tc, tl: pin, trusted: cons ? 0 : 1 });
         }
         var pins = runLis(sel);
         if (pins.length < MIN_PINS) {
@@ -179,14 +195,15 @@
               if (o < lo || o > hi || cd.corr < th) continue;
               if (!bc || cd.corr > bc.corr) bc = cd;
             }
-            if (bc) added.push({ key: sc2.key, tc: sc2.tc, tl: bc.tl });
+            /* trusted: левое расширение (0.5/≥30с) — 0 промахов; уплотнение @0.45 — 9/48 мимо */
+            if (bc) added.push({ key: sc2.key, tc: sc2.tc, tl: bc.tl, trusted: p0 ? 0 : 1 });
           }
           if (!added.length) break;
           pins = runLis(pins.concat(added));
         }
         /* 5. предикт: pin / цепочка от первого пина / warp-интерполяция */
-        var tlOf = {}, pk;
-        for (pk = 0; pk < pins.length; pk++) tlOf[pins[pk].key] = pins[pk].tl;
+        var tlOf = {}, trustOf = {}, pk;
+        for (pk = 0; pk < pins.length; pk++) { tlOf[pins[pk].key] = pins[pk].tl; trustOf[pins[pk].key] = pins[pk].trusted; }
         var warp = function (tc) {
           if (tc <= pins[0].tc) return pins[0].off;
           if (tc >= pins[pins.length - 1].tc) return pins[pins.length - 1].off;
@@ -201,12 +218,14 @@
           var sc3 = scans[si];
           if (sc3.tc == null) continue;
           var tl;
-          if (tlOf.hasOwnProperty(sc3.key)) { tl = tlOf[sc3.key]; nPin++; }
+          if (tlOf.hasOwnProperty(sc3.key)) { tl = tlOf[sc3.key]; if (trustOf[sc3.key]) pinned[sc3.key] = 1; nPin++; }
           else if (sc3.tc < pins[0].tc) { tl = sc3.tc + pins[0].off; nChain++; }
           else { tl = sc3.tc + warp(sc3.tc); nWarp++; }
           targets[sc3.key] = Math.round(tl / FRAME);
         }
-        notes.push('устройство: пинов ' + pins.length + ' (pin=' + nPin + ' chain=' + nChain + ' warp=' + nWarp + '), бэкбонов ' + bbs.length);
+        var nTrust = 0;
+        for (pk = 0; pk < pins.length; pk++) if (pins[pk].trusted) nTrust++;
+        notes.push('устройство: пинов ' + pins.length + ' (pin=' + nPin + ' chain=' + nChain + ' warp=' + nWarp + ', доверенных ' + nTrust + '), бэкбонов ' + bbs.length);
       });
     }
 
@@ -215,7 +234,7 @@
       all = all.then(function () { return processDevice(dev); });
     });
     return all.then(function () {
-      return { targets: targets, report: notes.join('; ') };
+      return { targets: targets, pinned: pinned, report: notes.join('; ') };
     });
   }
 

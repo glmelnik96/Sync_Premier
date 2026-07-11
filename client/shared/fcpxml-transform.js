@@ -375,6 +375,15 @@
         if (stp && stp.devPlaced) stp.targetFrames = opt.stretchTargets[stK];
       }
     }
+    /* opt.stretchPinned = { key → 1 }: пин-клипы warp'а ПОДТВЕРЖДЕНЫ звуком → снимаем
+       Rose (по path — вместе со связанными audio-копиями). Chain/warp-интерполированные
+       остаются Rose: их позиции предсказаны, не подтверждены. */
+    if (opt.stretchPinned) {
+      for (var spK in opt.stretchPinned) if (opt.stretchPinned.hasOwnProperty(spK)) {
+        var spc = clipByKey[spK];
+        if (spc && rosePaths[spc.path]) delete rosePaths[spc.path];
+      }
+    }
 
     // план каждого clipitem: позиция = targetFrames; in/out = ОРИГИНАЛ (полная длина).
     for (var a = 0; a < clips.length; a++) {

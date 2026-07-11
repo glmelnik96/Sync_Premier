@@ -50,7 +50,7 @@ for (const N of CASES) {
       { extractEnvelope: dsp.AudioEnvelope.extractEnvelope, SyncCore: dsp.SyncCore });
     console.log(`  stretch-warp: ${sw.report}`);
     if (Object.keys(sw.targets).length)
-      res = T.applySyncToXml(xml, clips, rows, { ...xopt, stretchTargets: sw.targets });
+      res = T.applySyncToXml(xml, clips, rows, { ...xopt, stretchTargets: sw.targets, stretchPinned: sw.pinned });
   }
   const outFile = `tmp_new${N}.xml`; writeFileSync(outFile, res.xml, 'utf8');
 
