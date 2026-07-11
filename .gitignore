@@ -6,3 +6,7 @@ _*cache*.json
 # standalone test outputs / эксперименты сравнения с эталонами
 tmp_*
 sync_premier_*.xml
+
+# локальные страховки и служебное Claude Code
+.backup/
+.claude/
