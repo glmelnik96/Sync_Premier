@@ -11,7 +11,9 @@
  *     ветер/гул накамерного микрофона) против каждого бэкбона (кросс-девайс источник
  *     ≥90с той же комнаты) → глобальный NCC-пик {corr, tl}.
  *  2. ПИНЫ: консенсус двух бэкбонов (±2с, corr≥0.60, клип≥5с) или одиночный corr≥0.70;
- *     LIS-фильтр по монотонности offset(tc) (допуск −2с) отсекает ложные пики.
+ *     clarity-гейт (резкость пика: corr − второй NCC-пик вне ±2с, порог 0.15) отсекает
+ *     «мутные» пики коррелированной среды; LIS-фильтр по монотонности offset(tc)
+ *     (допуск −2с) отсекает ложные пики.
  *  3. УПЛОТНЕНИЕ (итеративно ×4): кандидат в ЖЁСТКОМ монотонном окне офсета от фланговых
  *     пинов [p0.off−5с, p1.off+5с] @ corr≥0.45 → в пины → LIS заново. Левее первого пина
  *     (ведущий блок без соседа слева) — только длинные клипы ≥30с @ corr≥0.5: именно такой
@@ -21,10 +23,11 @@
  *     между пинами → линейная интерполяция offset(tc); правее последнего → его офсет.
  *
  * Rose-семантика (модель Syncaila: Rose = не подтверждено звуком). Снимаем Rose
- * (pinned→opt.stretchPinned) ТОЛЬКО с пинов доверенных классов — одиночный @0.70 и левое
- * расширение (0 промахов на кейсе 5). Консенсус-пины (3/22 мимо, до 3.7ч: коррелированная
- * среда даёт согласный ложный пик даже на разных устройствах) и пины уплотнения @0.45
- * (9/48 мимо) остаются Rose, как и chain/warp-интерполированные — монтажёр знает, где проверять.
+ * (pinned→opt.stretchPinned) со ВСЕХ базовых пинов после clarity-гейта и с левого
+ * расширения: с гейтом 0/31 промахов на кейсе 5 (без него консенсус промахивался 3/22 —
+ * коррелированная среда даёт согласный ложный пик даже на разных устройствах, но такие
+ * пики «мутные»: clar ≤ 0.124). Пины уплотнения @0.45 (11/55 мимо, clarity их не
+ * различает) остаются Rose, как и chain/warp-интерполированные — монтажёр знает, где проверять.
  *
  * ES5 IIFE, без Node-зависимостей в топ-уровне (ffmpeg — через переданный extractEnvelope).
  */
@@ -45,6 +48,13 @@
   var LEFT_TH = 0.5;       /* левое расширение: порог */
   var LEFT_MIN_DUR = 30;   /* левое расширение: мин длина клипа, с (критично!) */
   var MIN_PINS = 3;        /* меньше — не трогаем устройство (остаётся rigid-TC) */
+  var CLAR_TH = 0.15;      /* clarity-гейт базового пина: corr − второй пик вне ±2с.
+                              Эмпирика кейса 5 (12 ложных пинов): у ложных clar ≤ 0.124
+                              при corr до 0.78 (среда коррелирует), у верных медиана
+                              0.25 — резкость различает то, что corr не различает.
+                              Порог с запасом. Мутный пик НЕ базовый пин (и не одиночный —
+                              фолбэка нет), но остаётся кандидатом уплотнения, где его
+                              ограничивает монотонное окно фланговых резких пинов. */
 
   /* LIS по неубыванию офсета (tl−tc) в порядке tc; возвращает отфильтрованные пины */
   function runLis(sel) {
@@ -83,8 +93,9 @@
     var M = tplEnv.length;
     var pad = new Float64Array(sigEnv.length + 2 * M);
     pad.set(sigEnv, M);
-    var r = SyncCore.globalNccPeak(pad, tplEnv);
-    return { posSec: (r.lag - M) * dt, corr: r.corr };
+    /* exclLag ±2с → corr2 (второй пик) для clarity: резкость = corr − corr2 */
+    var r = SyncCore.globalNccPeak(pad, tplEnv, { exclLag: Math.max(1, Math.round(2 / dt)) });
+    return { posSec: (r.lag - M) * dt, corr: r.corr, clar: r.corr - r.corr2 };
   }
 
   /**
@@ -129,7 +140,7 @@
                 if (t.env.length >= 25) /* <0.5с шаблона — судить не о чем */
                   for (var bi = 0; bi < bbs.length; bi++) {
                     var lr = locate(SyncCore, bbs[bi].env, t.env, t.dtSec);
-                    cands.push({ bb: bbs[bi].path, corr: lr.corr, tl: bbs[bi].srcStartSec + lr.posSec });
+                    cands.push({ bb: bbs[bi].path, corr: lr.corr, clar: lr.clar, tl: bbs[bi].srcStartSec + lr.posSec });
                   }
                 scans.push({ key: f.key, tc: f.tcStartSec, segDur: segDur, cands: cands });
               }, function () {
@@ -147,20 +158,25 @@
           if (sc.segDur < PIN_MIN_DUR || sc.tc == null) continue;
           var strong = [];
           for (sj = 0; sj < sc.cands.length; sj++) if (sc.cands[sj].corr >= PIN_CONS_TH) strong.push(sc.cands[sj]);
-          var pin = null, cons = 0;
+          var pin = null, dClar = 0;
           for (var a = 0; a < strong.length && !pin; a++)
             for (var b = a + 1; b < strong.length; b++)
               if (devTok(strong[b].bb) !== devTok(strong[a].bb) && Math.abs(strong[a].tl - strong[b].tl) <= CONS_TOL) {
-                pin = (strong[a].tl + strong[b].tl) / 2; cons = 1; break;
+                pin = (strong[a].tl + strong[b].tl) / 2;
+                dClar = Math.min(strong[a].clar, strong[b].clar);
+                break;
               }
           if (pin == null) {
             var best = null;
             for (sj = 0; sj < strong.length; sj++) if (!best || strong[sj].corr > best.corr) best = strong[sj];
-            if (best && best.corr >= PIN_SINGLE_TH) pin = best.tl;
+            if (best && best.corr >= PIN_SINGLE_TH) { pin = best.tl; dClar = best.clar; }
           }
-          /* trusted (снятие Rose) = одиночный @0.70: 0 промахов; консенсус НЕ доверен
-             (среда даёт согласный ложный пик, 3/22 мимо до 3.7ч) */
-          if (pin != null) sel.push({ key: sc.key, tc: sc.tc, tl: pin, trusted: cons ? 0 : 1 });
+          /* clarity-гейт: мутный пик (clar < CLAR_TH) не берём в базу — вернётся через
+             уплотнение, если согласован с окном соседей. Для консенсуса clar = min пары.
+             trusted (снятие Rose) = ВСЕ базовые пины после clarity-гейта: до гейта консенсус
+             промахивался (3/22, corr до 0.78 — среда коррелирует согласный ложный пик),
+             с гейтом ложные ушли (их clar ≤ 0.124): 0/31 мимо на кейсе 5. */
+          if (pin != null && dClar >= CLAR_TH) sel.push({ key: sc.key, tc: sc.tc, tl: pin, trusted: 1 });
         }
         var pins = runLis(sel);
         if (pins.length < MIN_PINS) {
@@ -195,7 +211,7 @@
               if (o < lo || o > hi || cd.corr < th) continue;
               if (!bc || cd.corr > bc.corr) bc = cd;
             }
-            /* trusted: левое расширение (0.5/≥30с) — 0 промахов; уплотнение @0.45 — 9/48 мимо */
+            /* trusted: левое расширение (0.5/≥30с) — 0 промахов; уплотнение @0.45 — 11/55 мимо */
             if (bc) added.push({ key: sc2.key, tc: sc2.tc, tl: bc.tl, trusted: p0 ? 0 : 1 });
           }
           if (!added.length) break;
@@ -203,7 +219,9 @@
         }
         /* 5. предикт: pin / цепочка от первого пина / warp-интерполяция */
         var tlOf = {}, trustOf = {}, pk;
-        for (pk = 0; pk < pins.length; pk++) { tlOf[pins[pk].key] = pins[pk].tl; trustOf[pins[pk].key] = pins[pk].trusted; }
+        for (pk = 0; pk < pins.length; pk++) {
+          tlOf[pins[pk].key] = pins[pk].tl; trustOf[pins[pk].key] = pins[pk].trusted;
+        }
         var warp = function (tc) {
           if (tc <= pins[0].tc) return pins[0].off;
           if (tc >= pins[pins.length - 1].tc) return pins[pins.length - 1].off;

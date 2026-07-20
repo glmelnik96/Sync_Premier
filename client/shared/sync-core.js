@@ -139,8 +139,12 @@
    * lag — ЦЕЛЫЙ индекс в s, где начинается лучшее совпадение t (безопасен как
    * индекс массива); lagFrac — субсэмпловое уточнение пика параболой по трём
    * точкам NCC (как в normXCorr), |lagFrac − lag| ≤ 0.5 — для конверсии в секунды.
+   *
+   * opt.exclLag (сэмплов): дополнительно вернуть corr2 — высоту ВТОРОГО пика NCC
+   * вне окрестности ±exclLag от главного (метрика «остроты» à la Syncaila clarity:
+   * у ложного пика similarity почти та же, а доминирование над боковыми — в разы хуже).
    */
-  function globalNccPeak(s, t) {
+  function globalNccPeak(s, t, opt) {
     var M = t.length, N = s.length, i;
     if (M > N || M === 0) return { lag: 0, corr: -1, lagFrac: 0 };
     var raw = rawXCorrFFT(s, t);
@@ -172,6 +176,16 @@
       if (sub > 0.5) sub = 0.5; else if (sub < -0.5) sub = -0.5;
     }
     best.lagFrac = best.lag + sub;
+    /* второй пик вне ±exclLag от главного (только по запросу — O(N) доп. проход) */
+    if (opt && opt.exclLag > 0) {
+      var c2 = -2;
+      for (var lg = 0; lg + M <= N; lg++) {
+        if (lg > best.lag - opt.exclLag && lg < best.lag + opt.exclLag) continue;
+        var v2 = nccAt(lg);
+        if (v2 > c2) c2 = v2;
+      }
+      best.corr2 = c2;
+    }
     return best;
   }
 

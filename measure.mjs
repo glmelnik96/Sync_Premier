@@ -37,7 +37,8 @@ function overlaps(xml){ // по каждому <track> верхнего уров
 function dev(name){ const n=name.replace(/\.[^.]*$/,''); const i=n.indexOf('_'); return i>0?n.slice(0,i):n; }
 
 for (const N of CASES) {
-  const xml = readFileSync(CLEAN(N),'utf8');
+  // диск с медиа переехал D: → E: (июль 2026); XML-эталоны не трогаем
+  const xml = readFileSync(CLEAN(N),'utf8').replace(/file:\/\/localhost\/D%3a\//gi, 'file://localhost/E%3a/');
   const rate = T.deriveRate(xml); const { clips } = T.parseXml(xml);
   const snap = T.buildSnapshot(clips, rate.frameSec);
   const rows = await dsp.SyncRunner.runClipSync(snap,
