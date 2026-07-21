@@ -44,6 +44,7 @@
   var LIS_TOL = 2;         /* допуск немонотонности офсета, с */
   var ITER_TH = 0.45;      /* порог кандидата в монотонном окне */
   var ITER_TOLW = 5;       /* полуширина окна офсета от фланговых пинов, с */
+  var FLUX_TH = 0.2;       /* ЭКСП: мин. flux-corr одиночного пика в монотонном окне */
   var ITER_ROUNDS = 4;
   var LEFT_TH = 0.5;       /* левое расширение: порог */
   var LEFT_MIN_DUR = 30;   /* левое расширение: мин длина клипа, с (критично!) */
@@ -111,9 +112,10 @@
     var extract = io.extractEnvelope, SyncCore = io.SyncCore;
     var targets = {}, pinned = {}, notes = [];
 
+    var extract2 = io.extractEnvelope2 || null; /* ЭКСП: вторая фича (onset-flux) */
     function processDevice(dev) {
       /* 1. огибающие бэкбонов (band-pass, полные) */
-      var bbs = [];
+      var bbs = [], bbs2 = [];
       var chain = Promise.resolve();
       dev.backbones.forEach(function (b) {
         chain = chain.then(function () {
@@ -121,6 +123,12 @@
             if (r.env.length * r.dtSec >= BB_MIN_SEC)
               bbs.push({ path: b.path, srcStartSec: b.srcStartSec, env: r.env, dt: r.dtSec });
           }, function () { /* бэкбон не читается — пропускаем */ });
+        });
+        if (extract2) chain = chain.then(function () {
+          return extract2(b.path, { windowMs: WINDOW_MS }).then(function (r) {
+            if (r.env.length * r.dtSec >= BB_MIN_SEC)
+              bbs2.push({ path: b.path, srcStartSec: b.srcStartSec, env: r.env, dt: r.dtSec });
+          }, function () {});
         });
       });
       /* 2. скан клипов: глобальный пик по каждому бэкбону */
@@ -142,9 +150,20 @@
                     var lr = locate(SyncCore, bbs[bi].env, t.env, t.dtSec);
                     cands.push({ bb: bbs[bi].path, corr: lr.corr, clar: lr.clar, tl: bbs[bi].srcStartSec + lr.posSec });
                   }
-                scans.push({ key: f.key, tc: f.tcStartSec, segDur: segDur, cands: cands });
+                var rec = { key: f.key, tc: f.tcStartSec, segDur: segDur, cands: cands, cands2: [] };
+                scans.push(rec);
+                if (!extract2) return;
+                /* ЭКСП flux-скан: те же шаблонные границы, вторая фича */
+                return extract2(f.path, { startSec: f.inSec, durSec: segDur, windowMs: WINDOW_MS })
+                  .then(function (t2) {
+                    if (t2.env.length >= 25)
+                      for (var b2 = 0; b2 < bbs2.length; b2++) {
+                        var lr2 = locate(SyncCore, bbs2[b2].env, t2.env, t2.dtSec);
+                        rec.cands2.push({ bb: bbs2[b2].path, corr: lr2.corr, clar: lr2.clar, tl: bbs2[b2].srcStartSec + lr2.posSec });
+                      }
+                  }, function () {});
               }, function () {
-                scans.push({ key: f.key, tc: f.tcStartSec, segDur: segDur, cands: [] });
+                scans.push({ key: f.key, tc: f.tcStartSec, segDur: segDur, cands: [], cands2: [] });
               });
           });
         });
@@ -216,6 +235,45 @@
           }
           if (!added.length) break;
           pins = runLis(pins.concat(added));
+        }
+        /* ЭКСП 4b. flux-консенсус для беспиновых файлов: два КРОСС-девайс бэкбона согласны
+           ±CONS_TOL по второй фиче (onset-flux) → пин. trusted:0 (Rose остаётся). LIS защищает
+           монотонность. Стенд зоны 065–077: RMS 0/26 попаданий, flux 12/26. */
+        if (extract2) {
+          var haveF = {}, fi2, addedF = [];
+          for (fi2 = 0; fi2 < pins.length; fi2++) haveF[pins[fi2].key] = 1;
+          for (si = 0; si < scans.length; si++) {
+            var sf = scans[si];
+            if (haveF[sf.key] || sf.tc == null || !sf.cands2 || sf.cands2.length < 2) continue;
+            var pinF = null;
+            for (var fa = 0; fa < sf.cands2.length && pinF == null; fa++)
+              for (var fb = fa + 1; fb < sf.cands2.length; fb++)
+                if (devTok(sf.cands2[fb].bb) !== devTok(sf.cands2[fa].bb) &&
+                    Math.abs(sf.cands2[fa].tl - sf.cands2[fb].tl) <= CONS_TOL) {
+                  pinF = (sf.cands2[fa].tl + sf.cands2[fb].tl) / 2;
+                  break;
+                }
+            if (pinF == null && !io.fluxNoFallback) {
+              /* fallback: одиночный flux-пик в МОНОТОННОМ окне фланговых пинов
+                 (off(tc) монотонен → истина обязана лежать между off соседей ±TOLW) */
+              var pf0 = null, pf1 = null, pw;
+              for (pw = 0; pw < pins.length; pw++) {
+                if (pins[pw].tc <= sf.tc) pf0 = pins[pw]; else { pf1 = pins[pw]; break; }
+              }
+              if (pf0 && pf1) {
+                var wlo = pf0.off - ITER_TOLW, whi = pf1.off + ITER_TOLW, bcf = null;
+                for (var fc = 0; fc < sf.cands2.length; fc++) {
+                  var cf = sf.cands2[fc], of2 = cf.tl - sf.tc;
+                  if (of2 < wlo || of2 > whi || cf.corr < FLUX_TH) continue;
+                  if (!bcf || cf.corr > bcf.corr) bcf = cf;
+                }
+                if (bcf) pinF = bcf.tl;
+              }
+            }
+            if (pinF != null) addedF.push({ key: sf.key, tc: sf.tc, tl: pinF, trusted: 0 });
+          }
+          if (addedF.length) pins = runLis(pins.concat(addedF));
+          notes.push('flux-пинов: кандидатов ' + addedF.length);
         }
         /* 5. предикт: pin / цепочка от первого пина / warp-интерполяция */
         var tlOf = {}, trustOf = {}, pk;
