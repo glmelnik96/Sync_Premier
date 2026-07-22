@@ -10,7 +10,18 @@
 
   function hasNode() { return typeof require !== 'undefined'; }
 
+  /* Мемо найденного пути: extractEnvelope вызывает findFfmpegPath на КАЖДЫЙ клип
+     (проект в сотни клипов → сотни fs.existsSync + subprocess `where ffmpeg`).
+     Кешируем только НАЙДЕННЫЙ путь; null не кешируем — чтобы установка ffmpeg
+     посреди сессии подхватилась при следующем прогоне. */
+  var ffmpegPathMemo = null;
   function findFfmpegPath() {
+    if (ffmpegPathMemo) return ffmpegPathMemo;
+    ffmpegPathMemo = probeFfmpegPath();
+    return ffmpegPathMemo;
+  }
+
+  function probeFfmpegPath() {
     if (!hasNode()) return null;
     var fs = require('fs');
     var cands = [
@@ -64,7 +75,7 @@
     return new Promise(function (resolve, reject) {
       if (!hasNode()) return reject(new Error('Node.js недоступен'));
       var bin = findFfmpegPath();
-      if (!bin) return reject(new Error('ffmpeg не найден'));
+      if (!bin) return reject(new Error('ffmpeg не найден — установите ffmpeg (напр. winget install ffmpeg) и повторите'));
       var args = ['-hide_banner', '-nostats', '-v', 'error'];
       if (opt.startSec != null) args.push('-ss', String(opt.startSec));
       if (opt.durSec != null) args.push('-t', String(opt.durSec));

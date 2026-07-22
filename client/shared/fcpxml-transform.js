@@ -22,22 +22,42 @@
     return s;
   }
 
-  /** timebase/ntsc первой <rate> секвенции → {frameSec, ticksPerFrame}. */
+  /** timebase/ntsc первой <rate> секвенции → {frameSec, ticksPerFrame, found}.
+      found=false, если sequence-level <timebase> не найден: число тогда — безопасный
+      дефолт (tb24/ntsc), но потребитель (panel) обязан прервать синхрон с явной ошибкой,
+      а НЕ молча гнать материал по угаданному fps (иначе всё разъедется без сигнала). */
   function deriveRate(xml) {
     var seqHead = xml.slice(0, xml.indexOf('<media>') >= 0 ? xml.indexOf('<media>') : xml.length);
     var tbM = seqHead.match(/<timebase>(\d+)<\/timebase>/);
     var ntscM = seqHead.match(/<ntsc>(TRUE|FALSE)<\/ntsc>/i);
-    var tb = tbM ? parseInt(tbM[1], 10) : 24;
+    var found = !!(tbM && parseInt(tbM[1], 10) > 0);
+    var tb = found ? parseInt(tbM[1], 10) : 24;
     var ntsc = ntscM ? /TRUE/i.test(ntscM[1]) : true;
     var frameSec = ntsc ? (1001 / (tb * 1000)) : (1 / tb);
-    return { frameSec: frameSec, ticksPerFrame: Math.round(SECOND_TICKS * frameSec), timebase: tb, ntsc: ntsc };
+    return { frameSec: frameSec, ticksPerFrame: Math.round(SECOND_TICKS * frameSec), timebase: tb, ntsc: ntsc, found: found };
   }
 
   /** Парс xmeml → {clips:[{id,start,end,inP,out,path,name,type,fullMatch, tcFrame,tcRateSec,srcDurFrames}]}.
       Timecode (frame/timebase/ntsc/displayformat) и длительность файла — из полного <file>
       блока; для clipitem'ов со ссылкой <file id=".."/> берутся по fileById. */
+  /* Начало аудио-секции СЕКВЕНЦИИ — структурно, не по отступам. Секвенция: <media>(глубина 1)
+     → <video>/<audio> (прямые дети). У каждого clipitem вложенный <file><media><video><audio>
+     — они глубже (mediaDepth≥2) и игнорируются. Возвращает индекс первого <audio> на
+     mediaDepth==1, либо −1, если аудио-секции нет (видео-only секвенция). Раньше искали
+     '\n\t\t\t<audio>' (ровно 3 таба): смена отступов Premiere → −1 → ВСЕ клипы audio. */
+  function seqAudioStart(xml) {
+    var re = /<(\/?)(media|video|audio)\b[^>]*?>/g, m, mediaDepth = 0;
+    while ((m = re.exec(xml))) {
+      var closing = m[1] === '/', tag = m[2];
+      if (m[0].charAt(m[0].length - 2) === '/') continue; /* самозакрывающийся — не меняет глубину */
+      if (tag === 'media') { mediaDepth += closing ? -1 : 1; continue; }
+      if (!closing && tag === 'audio' && mediaDepth === 1) return m.index;
+    }
+    return -1;
+  }
+
   function parseXml(xml) {
-    var audioRegionStart = xml.indexOf('\n\t\t\t<audio>');
+    var audioRegionStart = seqAudioStart(xml);
     var fileById = {}, fileTc = {}, fileDur = {}, fm;
     var fileRe = /<file id="([^"]+)"\s*>([\s\S]*?)<\/file>/g;
     while ((fm = fileRe.exec(xml))) {
@@ -76,7 +96,7 @@
         id: cm[1], start: num(/<start>(-?\d+)<\/start>/), end: num(/<end>(-?\d+)<\/end>/),
         inP: num(/<in>(-?\d+)<\/in>/), out: num(/<out>(-?\d+)<\/out>/),
         fid: fid, path: fid ? fileById[fid] : null,
-        name: nameM ? nameM[1] : cm[1], type: offset < audioRegionStart ? 'video' : 'audio',
+        name: nameM ? nameM[1] : cm[1], type: (audioRegionStart >= 0 && offset >= audioRegionStart) ? 'audio' : 'video',
         trackId: trackAt(offset),
         tcStartSec: tc ? (tc.frame / tc.realFps) : null,
         srcDurSec: (fid && fileDur[fid] && tc) ? (fileDur[fid] / tc.realFps) : null,
@@ -724,12 +744,20 @@
     var xmlTail = xml.slice(seqM.index + seqTemplate.length);
 
     var blk = seqTemplate;
-    for (var b2 = 0; b2 < clips.length; b2++) { var rep = renderClip(clips[b2]); if (rep !== clips[b2].fullMatch) blk = blk.replace(clips[b2].fullMatch, rep); }
+    for (var b2 = 0; b2 < clips.length; b2++) {
+      var rep = renderClip(clips[b2]);
+      /* function-replacer: rep — целый clipitem с произвольным текстом (путь/имя файла).
+         При строковом replace '$&'/'$1'/'$$' в rep были бы спец-паттернами → порча XML
+         (напр. путь C:\$RECYCLE или имя Take$1). Функция возвращает rep дословно. */
+      if (rep !== clips[b2].fullMatch) blk = blk.replace(clips[b2].fullMatch, function () { return rep; });
+    }
     /* КРИТИЧНО: clipitem'ы ВНУТРИ дорожки должны идти в ХРОНОЛОГИЧЕСКОМ порядке (по <start>).
        Иначе Premiere ломает импорт многоклиповых дорожек — клипы пропадают (был корень
        «нет целых камер»: я менял позиции, но XML-порядок clipitem оставался исходным). */
     blk = blk.replace(/(<track\b[^>]*>)([\s\S]*?)(<\/track>)/g, function (full, open, body, close) {
-      var items = [], cre = /<clipitem id="[^"]+"[\s\S]*?<\/clipitem>/g, im;
+      /* \b[^>]*> — ловим clipitem С id И без id: id-less clipitem между двумя id-клипами
+         иначе выпал бы из reorder (не попал ни в head, ни в items, ни в tail → потеря). */
+      var items = [], cre = /<clipitem\b[^>]*>[\s\S]*?<\/clipitem>/g, im;
       while ((im = cre.exec(body))) items.push(im[0]);
       if (items.length < 2) return full;
       var firstIdx = body.indexOf(items[0]);

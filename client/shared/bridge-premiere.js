@@ -76,10 +76,8 @@
             try {
               var parsed = JSON.parse(s);
               if (parsed === null) { finish(new Error('Host вернул null'), null); return; }
-              if (parsed && parsed._hostError === true) {
-                finish(new Error('Host: [' + (parsed.fn || '?') + '] ' + (parsed.msg || '')), null);
-                return;
-              }
+              /* Host сигналит ошибку как {ok:false, error:...}; интерпретирует вызывающий
+                 (panel.js проверяет exp.error / imp.ok). Bridge отдаёт распарсенный объект. */
               finish(null, parsed);
             } catch (e) {
               finish(new Error('JSON от хоста: ' + String(raw).slice(0, 500)), null);

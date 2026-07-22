@@ -54,6 +54,8 @@ if (typeof JSON === 'undefined') {
 
 if (typeof $._SYNC_ === 'undefined') { $._SYNC_ = {}; }
 
+/* Источник версии — package.json ("version"). Держать в согласии с
+   CSXS/manifest.xml (ExtensionBundleVersion) вручную (build-шага нет). */
 $._SYNC_.version = '0.2.1';
 
 /** Экспорт активной секвенции в FCP7 XML во временную ASCII-папку (кириллица в пути

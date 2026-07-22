@@ -42,6 +42,7 @@
       try { xml = fs.readFileSync(exp.path, 'utf8'); } catch (e2) { setStatus('Не удалось прочитать XML: ' + e2.message, 'error'); setProgress(0.1, 'error'); setBusy(false); return; }
 
       var rate = T.deriveRate(xml);
+      if (!rate.found) { setStatus('Не удалось определить частоту кадров секвенции (<timebase>) — синхрон отменён', 'error'); setProgress(0.25, 'error'); setBusy(false); return; }
       var parsed = T.parseXml(xml);
       setProgress(0.25);
       setStatus('2/4 · «' + exp.seqName + '»: анализ ' + parsed.clips.length + ' клипов (огибающие)…', 'busy');

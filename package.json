@@ -1,5 +1,6 @@
 {
   "name": "sync-premier",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "CEP-плагин синхронизации клипов по звуку для Premiere Pro",
