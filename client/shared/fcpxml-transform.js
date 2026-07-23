@@ -708,7 +708,12 @@
     }
 
     // собрать ОДНУ секвенцию
-    var synced = 0, unsynced = 0, endF = 0;
+    /* Счёт по ИСТОЧНИКАМ, не clipitem'ам: один исходный клип «видео+стерео-звук» даёт
+       3 clipitem с общим path|start (video + 2 audio-канала). Считать clipitem'ы —
+       завышать число («2 клипа» → «3»). Ключ path|start = один источник; 'sync'
+       перекрывает 'unsynced' (если хоть один clipitem источника размещён — источник синхронизован). */
+    var srcStatus = {}, endF = 0;
+    function srcKeyOf(c) { return (c.path || ('#' + c.id)) + '|' + c.start; }
     function renderClip(c) {
       if (!c.plan) return '';
       var s = c.plan.start < 0 ? 0 : c.plan.start;
@@ -732,7 +737,9 @@
         if (/<labels>/.test(block)) block = block.replace(/<labels>[\s\S]*?<\/labels>/, roseBlk);
         else block = block.replace(/(\s*)<\/clipitem>$/, '\n\t\t\t\t\t' + roseBlk + '$1</clipitem>');
       }
-      if (c.plan.status === 'unsynced') unsynced++; else synced++;
+      var sk = srcKeyOf(c);
+      if (c.plan.status === 'unsynced') { if (!(sk in srcStatus)) srcStatus[sk] = 'unsynced'; }
+      else srcStatus[sk] = 'sync';
       if (en > endF) endF = en;
       return block;
     }
@@ -751,6 +758,9 @@
          (напр. путь C:\$RECYCLE или имя Take$1). Функция возвращает rep дословно. */
       if (rep !== clips[b2].fullMatch) blk = blk.replace(clips[b2].fullMatch, function () { return rep; });
     }
+    /* свод по источникам (см. srcStatus выше): synced/unsynced — число ИСТОЧНИКОВ. */
+    var synced = 0, unsynced = 0;
+    for (var scK in srcStatus) if (srcStatus.hasOwnProperty(scK)) { if (srcStatus[scK] === 'unsynced') unsynced++; else synced++; }
     /* КРИТИЧНО: clipitem'ы ВНУТРИ дорожки должны идти в ХРОНОЛОГИЧЕСКОМ порядке (по <start>).
        Иначе Premiere ломает импорт многоклиповых дорожек — клипы пропадают (был корень
        «нет целых камер»: я менял позиции, но XML-порядок clipitem оставался исходным). */
@@ -808,7 +818,10 @@
     var out = xmlHead + wrapped + xmlTail;
     return { xml: out, stats: { synced: synced, unsynced: unsynced, tcRescued: rescued,
       syncedEndSec: Math.round(syncedEndF * FRAME), unsyncedEndSec: Math.round(endF * FRAME),
-      hasUnsynced: unsynced > 0 },
+      hasUnsynced: unsynced > 0,
+      /* нечего синхронизировать: ни один источник не размещён (ни звуком, ни по TC).
+         Панель тогда предупреждает и НЕ создаёт красную секвенцию (см. panel.js). */
+      nothingToSync: synced === 0 },
       /* Ф3.1: обнаруженные stretch-камеры. Если непусто и opt.stretchTargets не передан —
          вызывающий код может сделать pass 2: StretchWarp.computeTargets(result.stretch, io)
          → повторный applySyncToXml с opt.stretchTargets. */

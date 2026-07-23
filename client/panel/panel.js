@@ -73,6 +73,14 @@
           return pass2;
         })
         .then(function (res) {
+          /* Нечего синхронизировать: ни один источник не подтверждён звуком и не размещён
+             по timecode. НЕ создаём красную секвенцию из «нуля» — честно предупреждаем. */
+          if (res.stats.nothingToSync) {
+            setBusy(false); setProgress(null);
+            setStatus('Нечего синхронизировать: не найдено клипов с общим звуком', 'error');
+            showResult('<div class="note">Синхронизация по звуку требует ≥2 источников, записавших ОДИН И ТОТ ЖЕ звук (камеры + рекордер одной сцены). В текущей секвенции общего звука не найдено — секвенция не создана.</div>');
+            return;
+          }
           var outPath = exp.path.replace(/sync_premier_in\.xml$/, 'sync_premier_out.xml');
           fs.writeFileSync(outPath, res.xml, 'utf8');
 
