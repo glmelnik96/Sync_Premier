@@ -56,7 +56,7 @@ if (typeof $._SYNC_ === 'undefined') { $._SYNC_ = {}; }
 
 /* Источник версии — package.json ("version"). Держать в согласии с
    CSXS/manifest.xml (ExtensionBundleVersion) вручную (build-шага нет). */
-$._SYNC_.version = '0.2.1';
+$._SYNC_.version = '0.2.2';
 
 /** Экспорт активной секвенции в FCP7 XML во временную ASCII-папку (кириллица в пути
     ломает File()). → {ok, path, seqName}. Панель прочитает файл, синхронизирует, импортирует. */
