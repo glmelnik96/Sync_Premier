@@ -150,33 +150,44 @@
     }
   }, 300);
 
-  /* ── Обновления: версия в футере + тихая авто-проверка при старте (оффлайн/ошибки
-     не шумят). Есть новая версия → кнопка «Обновить до vX» → применение (git pull
-     на dev-клоне / zip-замена у пользователя) → «Перезагрузить панель» (reload
-     перечитает и client-код, и jsx через ensureHost). */
+  /* ── Обновления: версия в футере + ПОСТОЯННАЯ кнопка «Проверить обновления».
+     Клик = проверка (raw package.json на main) → есть новая версия — сразу
+     применение (git pull на dev-клоне / zip-замена у пользователя) →
+     «перезагрузить панель» (reload перечитает и client-код, и jsx через
+     ensureHost); нет новой — «Актуальная версия ✓». Ошибки видны на кнопке
+     (текст + title с деталями), а не глотаются молча. */
   var verLabel = document.getElementById('verLabel');
   var updBtn = document.getElementById('updBtn');
   var extRoot = null;
   try { extRoot = new CSInterface().getExtensionPath().replace(/\\/g, '/'); } catch (eR) {}
   var curVer = window.SyncUpdater.localVersion(extRoot);
   verLabel.textContent = curVer ? 'v' + curVer : '';
-  setTimeout(function () {
+  var IDLE_TEXT = 'Проверить обновления';
+  updBtn.hidden = false;
+  updBtn.textContent = IDLE_TEXT;
+  updBtn.onclick = function () {
+    if (btn.disabled) return; /* не обновляемся во время синхрона */
+    updBtn.disabled = true; updBtn.title = ''; updBtn.textContent = 'Проверка…';
     window.SyncUpdater.checkForUpdate(extRoot, function (err, info) {
-      if (err || !info || !info.hasUpdate) return;
-      updBtn.hidden = false;
-      updBtn.textContent = 'Обновить до v' + info.latest;
-      updBtn.onclick = function () {
-        if (btn.disabled) return; /* не обновляемся во время синхрона */
-        updBtn.disabled = true; updBtn.textContent = 'Обновление…';
-        window.SyncUpdater.applyUpdate(extRoot, function (e2) {
-          updBtn.disabled = false;
-          if (e2) { updBtn.textContent = 'Ошибка обновления — повторить'; updBtn.title = e2.message; return; }
-          updBtn.textContent = 'Обновлено ✓ — перезагрузить панель';
-          updBtn.onclick = function () { location.reload(); };
-        });
-      };
+      if (err) {
+        updBtn.disabled = false; updBtn.textContent = 'Ошибка проверки — повторить';
+        updBtn.title = err.message; return;
+      }
+      if (!info.hasUpdate) {
+        updBtn.disabled = false; updBtn.textContent = 'Актуальная версия ✓';
+        setTimeout(function () { if (!updBtn.disabled) updBtn.textContent = IDLE_TEXT; }, 4000);
+        return;
+      }
+      var fromTo = 'v' + (info.current || '?') + ' → v' + info.latest;
+      updBtn.textContent = 'Обновление ' + fromTo + '…';
+      window.SyncUpdater.applyUpdate(extRoot, function (e2) {
+        updBtn.disabled = false;
+        if (e2) { updBtn.textContent = 'Ошибка обновления — повторить'; updBtn.title = e2.message; return; }
+        updBtn.textContent = 'Обновлено ' + fromTo + ' — перезагрузить панель';
+        updBtn.onclick = function () { location.reload(); };
+      });
     });
-  }, 1200);
+  };
 
   setStatus('Откройте секвенцию и нажмите «Синхронизировать».');
 })();

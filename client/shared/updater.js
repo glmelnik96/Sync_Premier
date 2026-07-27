@@ -45,32 +45,44 @@
     } catch (e) { return null; }
   }
 
-  /** fetch с таймаутом → Promise<текст>. */
-  function fetchText(url, timeoutMs) {
-    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var t = ctl ? setTimeout(function () { ctl.abort(); }, timeoutMs) : null;
-    return fetch(url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      })
-      .then(function (txt) { if (t) clearTimeout(t); return txt; },
-            function (e) { if (t) clearTimeout(t); throw e; });
+  /** HTTP GET через Node https (НЕ браузерный fetch: у панели origin file:// →
+      codeload режется CORS'ом; Node-запросам CORS не писан). Редиректы ≤5,
+      таймаут на весь запрос → cb(err, Buffer). cb гарантированно один раз. */
+  function httpGet(url, timeoutMs, cb, redirectsLeft) {
+    if (redirectsLeft === undefined) redirectsLeft = 5;
+    var https = require('https');
+    var done = false;
+    function once(err, buf) { if (!done) { done = true; cb(err, buf); } }
+    var req = https.get(url, { headers: { 'User-Agent': 'SyncPremier-Updater' } }, function (res) {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+        res.resume();
+        done = true;
+        httpGet(res.headers.location, timeoutMs, cb, redirectsLeft - 1);
+        return;
+      }
+      if (res.statusCode !== 200) { res.resume(); once(new Error('HTTP ' + res.statusCode)); return; }
+      var chunks = [];
+      res.on('data', function (c) { chunks.push(c); });
+      res.on('end', function () { once(null, Buffer.concat(chunks)); });
+      res.on('error', function (e) { once(e); });
+    });
+    req.setTimeout(timeoutMs, function () { req.destroy(new Error('таймаут ' + Math.round(timeoutMs / 1000) + 'с')); });
+    req.on('error', function (e) { once(e); });
   }
 
   /** Проверка обновления → cb(err, {current, latest, hasUpdate}).
       Нет version на main / сеть недоступна → err (вызывающий решает, шуметь ли). */
   function checkForUpdate(root, cb) {
+    if (!hasNode()) { cb(new Error('Node.js недоступен в панели')); return; }
     var current = localVersion(root);
-    fetchText(RAW_PKG_URL, FETCH_TIMEOUT_MS)
-      .then(function (txt) {
-        var latest = null;
-        try { latest = JSON.parse(txt).version || null; } catch (e) {}
-        if (!latest) { cb(new Error('на main нет поля version')); return; }
-        cb(null, { current: current, latest: latest,
-          hasUpdate: current != null && cmpVer(current, latest) < 0 });
-      })
-      .catch(function (e) { cb(new Error('проверка обновлений: ' + (e && e.message ? e.message : e))); });
+    httpGet(RAW_PKG_URL, FETCH_TIMEOUT_MS, function (err, buf) {
+      if (err) { cb(new Error('проверка обновлений: ' + err.message)); return; }
+      var latest = null;
+      try { latest = JSON.parse(buf.toString('utf8')).version || null; } catch (e) {}
+      if (!latest) { cb(new Error('на main нет поля version')); return; }
+      cb(null, { current: current, latest: latest,
+        hasUpdate: current != null && cmpVer(current, latest) < 0 });
+    });
   }
 
   /** git pull --ff-only в root → cb(err). Расхождение/грязное дерево — честная ошибка. */
@@ -92,40 +104,32 @@
     function cleanup() { try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch (e) {} }
     function fail(msg) { cleanup(); cb(new Error(msg)); }
 
-    var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var t = ctl ? setTimeout(function () { ctl.abort(); }, ZIP_TIMEOUT_MS) : null;
-    fetch(ZIP_URL, { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.arrayBuffer();
-      })
-      .then(function (ab) {
-        if (t) clearTimeout(t);
-        fs.writeFileSync(zipPath, Buffer.from(ab));
-        /* распаковка: win — PowerShell Expand-Archive; иначе unzip. execFile c массивом
-           аргументов (без shell-конкатенации) — пути не интерполируются в команду. */
-        var isWin = process.platform === 'win32';
-        var bin = isWin ? 'powershell.exe' : 'unzip';
-        var args = isWin
-          ? ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:SP_ZIP -DestinationPath $env:SP_DST -Force']
-          : ['-o', zipPath, '-d', tmpBase];
-        var env = isWin ? Object.assign({}, process.env, { SP_ZIP: zipPath, SP_DST: tmpBase }) : process.env;
-        execFile(bin, args, { timeout: 60000, env: env }, function (err) {
-          if (err) { fail('распаковка: ' + err.message); return; }
-          /* корневая папка архива: <Repo>-<branch> */
-          var entries;
-          try { entries = fs.readdirSync(tmpBase).filter(function (n) { return n !== 'upd.zip'; }); }
-          catch (e) { fail('чтение архива: ' + e.message); return; }
-          if (entries.length !== 1) { fail('неожиданная структура архива: ' + entries.join(', ')); return; }
-          var srcDir = path.join(tmpBase, entries[0]);
-          try {
-            fs.cpSync(srcDir, root, { recursive: true, force: true });
-          } catch (e2) { fail('копирование файлов: ' + e2.message); return; }
-          cleanup();
-          cb(null);
-        });
-      })
-      .catch(function (e) { if (t) clearTimeout(t); fail('скачивание: ' + (e && e.message ? e.message : e)); });
+    httpGet(ZIP_URL, ZIP_TIMEOUT_MS, function (errDl, buf) {
+      if (errDl) { fail('скачивание: ' + errDl.message); return; }
+      fs.writeFileSync(zipPath, buf);
+      /* распаковка: win — PowerShell Expand-Archive; иначе unzip. execFile c массивом
+         аргументов (без shell-конкатенации) — пути не интерполируются в команду. */
+      var isWin = process.platform === 'win32';
+      var bin = isWin ? 'powershell.exe' : 'unzip';
+      var args = isWin
+        ? ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:SP_ZIP -DestinationPath $env:SP_DST -Force']
+        : ['-o', zipPath, '-d', tmpBase];
+      var env = isWin ? Object.assign({}, process.env, { SP_ZIP: zipPath, SP_DST: tmpBase }) : process.env;
+      execFile(bin, args, { timeout: 60000, env: env }, function (err) {
+        if (err) { fail('распаковка: ' + err.message); return; }
+        /* корневая папка архива: <Repo>-<branch> */
+        var entries;
+        try { entries = fs.readdirSync(tmpBase).filter(function (n) { return n !== 'upd.zip'; }); }
+        catch (e) { fail('чтение архива: ' + e.message); return; }
+        if (entries.length !== 1) { fail('неожиданная структура архива: ' + entries.join(', ')); return; }
+        var srcDir = path.join(tmpBase, entries[0]);
+        try {
+          fs.cpSync(srcDir, root, { recursive: true, force: true });
+        } catch (e2) { fail('копирование файлов: ' + e2.message); return; }
+        cleanup();
+        cb(null);
+      });
+    });
   }
 
   /** Применить обновление (гибрид) → cb(err). */
