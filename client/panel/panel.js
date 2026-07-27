@@ -158,10 +158,20 @@
      (текст + title с деталями), а не глотаются молча. */
   var verLabel = document.getElementById('verLabel');
   var updBtn = document.getElementById('updBtn');
+  /* CEP отдаёт путь расширения как URI (file:///C:/Users/%D0%93...): ExtendScript
+     File() это ест (jsx грузится), а Node fs — нет → кириллица в имени пользователя
+     ломала чтение package.json (пустой футер, ложная «актуальная версия»).
+     Нормализация: срезать file:///, раскодировать %-последовательности; для обычного
+     пути — no-op (decodeURIComponent без % ничего не меняет, ошибка — оставляем как есть). */
   var extRoot = null;
-  try { extRoot = new CSInterface().getExtensionPath().replace(/\\/g, '/'); } catch (eR) {}
+  try {
+    var rawP = String(new CSInterface().getExtensionPath() || '').replace(/^file:\/{2,3}/, '');
+    try { rawP = decodeURIComponent(rawP); } catch (eD) {}
+    extRoot = rawP.replace(/\\/g, '/') || null;
+  } catch (eR) {}
   var curVer = window.SyncUpdater.localVersion(extRoot);
-  verLabel.textContent = curVer ? 'v' + curVer : '';
+  verLabel.textContent = curVer ? 'v' + curVer : 'v?';
+  verLabel.title = extRoot || 'путь расширения недоступен';
   var IDLE_TEXT = 'Проверить обновления';
   updBtn.hidden = false;
   updBtn.textContent = IDLE_TEXT;
@@ -172,6 +182,11 @@
       if (err) {
         updBtn.disabled = false; updBtn.textContent = 'Ошибка проверки — повторить';
         updBtn.title = err.message; return;
+      }
+      if (info.current == null) {
+        /* локальная версия не прочиталась → «hasUpdate: false» ничего не значит */
+        updBtn.disabled = false; updBtn.textContent = 'Ошибка: версия плагина не определена';
+        updBtn.title = 'Не читается package.json в ' + (extRoot || '(путь недоступен)'); return;
       }
       if (!info.hasUpdate) {
         updBtn.disabled = false; updBtn.textContent = 'Актуальная версия ✓';

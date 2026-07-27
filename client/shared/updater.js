@@ -85,10 +85,15 @@
     });
   }
 
-  /** git pull --ff-only в root → cb(err). Расхождение/грязное дерево — честная ошибка. */
+  /** git pull --ff-only в root → cb(err). Тянем по явному HTTPS-URL (репо публичное):
+      origin может быть SSH (git@github.com), а у Node-процесса CEP нет окружения
+      ssh (known_hosts/агент) → «Host key verification failed». HTTPS без auth
+      работает всегда; origin пользователя не трогаем. Расхождение/грязное
+      дерево — честная ошибка (--ff-only). */
   function updateViaGit(root, cb) {
     var execFile = require('child_process').execFile;
-    execFile('git', ['-C', root, 'pull', '--ff-only'], { timeout: 60000 },
+    var httpsUrl = 'https://github.com/' + REPO + '.git';
+    execFile('git', ['-C', root, 'pull', '--ff-only', httpsUrl, BRANCH], { timeout: 60000 },
       function (err, stdout, stderr) {
         if (err) { cb(new Error('git pull: ' + (String(stderr || '').trim() || err.message))); return; }
         cb(null);
