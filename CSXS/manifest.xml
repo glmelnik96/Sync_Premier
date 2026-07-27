@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<ExtensionManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ExtensionBundleId="com.gleb.aisync" ExtensionBundleVersion="0.2.2" Version="11.0">
+<ExtensionManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ExtensionBundleId="com.gleb.aisync" ExtensionBundleVersion="0.2.3" Version="11.0">
   <ExtensionList>
-    <Extension Id="com.gleb.aisync.panel" Version="0.2.2" />
+    <Extension Id="com.gleb.aisync.panel" Version="0.2.3" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
