@@ -45,7 +45,14 @@
       if (!rate.found) { setStatus('Не удалось определить частоту кадров секвенции (<timebase>) — синхрон отменён', 'error'); setProgress(0.25, 'error'); setBusy(false); return; }
       var parsed = T.parseXml(xml);
       setProgress(0.25);
-      setStatus('2/4 · «' + exp.seqName + '»: анализ ' + parsed.clips.length + ' клипов (огибающие)…', 'busy');
+      /* счёт по ИСТОЧНИКАМ (path|start), как в итоговой сводке: связка «видео+стерео»
+         даёт 3 clipitem одного источника — показывать clipitem'ы значит завышать. */
+      var srcSeen = {}, srcCount = 0;
+      for (var sc0 = 0; sc0 < parsed.clips.length; sc0++) {
+        var kk = (parsed.clips[sc0].path || parsed.clips[sc0].id) + '|' + parsed.clips[sc0].start;
+        if (!srcSeen[kk]) { srcSeen[kk] = 1; srcCount++; }
+      }
+      setStatus('2/4 · «' + exp.seqName + '»: анализ ' + srcCount + ' клипов (огибающие)…', 'busy');
 
       var snapshot = T.buildSnapshot(parsed.clips, rate.frameSec);
       window.SyncRunner.runClipSync(snapshot, { extractEnvelope: window.AudioEnvelope.extractEnvelope },
@@ -128,6 +135,48 @@
     var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
     return (h ? h + ':' : '') + (h ? ('0' + m).slice(-2) : m) + ':' + ('0' + x).slice(-2);
   }
+
+  /* ── Окружение: статус ffmpeg сразу при старте (а не ошибка посреди синхрона).
+     findFfmpegPath может дёргать `where` (до 5с) → уводим с первого кадра setTimeout'ом.
+     null не мемоизируется → установка ffmpeg посреди сессии подхватится при синхроне. */
+  var envEl = document.getElementById('envState');
+  setTimeout(function () {
+    var p = null;
+    try { p = window.AudioEnvelope.findFfmpegPath(); } catch (e) {}
+    if (p) { envEl.className = 'env-state ok'; envEl.textContent = 'ffmpeg: найден'; }
+    else {
+      envEl.className = 'env-state warn';
+      envEl.innerHTML = 'ffmpeg не найден — анализ звука не сработает. Установите: <b>winget install ffmpeg</b> и переоткройте панель.';
+    }
+  }, 300);
+
+  /* ── Обновления: версия в футере + тихая авто-проверка при старте (оффлайн/ошибки
+     не шумят). Есть новая версия → кнопка «Обновить до vX» → применение (git pull
+     на dev-клоне / zip-замена у пользователя) → «Перезагрузить панель» (reload
+     перечитает и client-код, и jsx через ensureHost). */
+  var verLabel = document.getElementById('verLabel');
+  var updBtn = document.getElementById('updBtn');
+  var extRoot = null;
+  try { extRoot = new CSInterface().getExtensionPath().replace(/\\/g, '/'); } catch (eR) {}
+  var curVer = window.SyncUpdater.localVersion(extRoot);
+  verLabel.textContent = curVer ? 'v' + curVer : '';
+  setTimeout(function () {
+    window.SyncUpdater.checkForUpdate(extRoot, function (err, info) {
+      if (err || !info || !info.hasUpdate) return;
+      updBtn.hidden = false;
+      updBtn.textContent = 'Обновить до v' + info.latest;
+      updBtn.onclick = function () {
+        if (btn.disabled) return; /* не обновляемся во время синхрона */
+        updBtn.disabled = true; updBtn.textContent = 'Обновление…';
+        window.SyncUpdater.applyUpdate(extRoot, function (e2) {
+          updBtn.disabled = false;
+          if (e2) { updBtn.textContent = 'Ошибка обновления — повторить'; updBtn.title = e2.message; return; }
+          updBtn.textContent = 'Обновлено ✓ — перезагрузить панель';
+          updBtn.onclick = function () { location.reload(); };
+        });
+      };
+    });
+  }, 1200);
 
   setStatus('Откройте секвенцию и нажмите «Синхронизировать».');
 })();

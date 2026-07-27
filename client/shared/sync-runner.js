@@ -230,7 +230,13 @@
       if (D <= 1) return env;
       var n = Math.floor(env.length / D); if (n < 1) n = 1;
       var o = new Float64Array(n);
-      for (var i = 0; i < n; i++) { var s = 0; for (var k = 0; k < D; k++) s += env[i * D + k]; o[i] = s / D; }
+      /* кламп k по длине: при env.length < D (суб-секундный клип на DS>1) полный блок
+         читал бы за границей → NaN-огибающая. Для env.length ≥ n·D поведение идентично. */
+      for (var i = 0; i < n; i++) {
+        var s = 0, cnt = 0;
+        for (var k = 0; k < D && i * D + k < env.length; k++) { s += env[i * D + k]; cnt++; }
+        o[i] = cnt ? s / cnt : 0;
+      }
       return o;
     }
     /* позиция шаблона t в сигнале s (полный поиск с краевым перекрытием) → {posSec, corr} */

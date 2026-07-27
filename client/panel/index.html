@@ -14,6 +14,7 @@
     <button id="syncXml" class="primary">Синхронизировать</button>
 
     <div id="status" class="status">Откройте секвенцию и нажмите «Синхронизировать».</div>
+    <div id="envState" class="env-state"></div>
     <div id="progress" class="progress"><div id="progressBar" class="progress-bar"></div></div>
     <div id="result" class="result"></div>
 
@@ -32,6 +33,11 @@
         Если общего звука нет — синхронизировать нечего.</p>
       <p class="muted">Исходная секвенция не изменяется — результат это новая секвенция.</p>
     </details>
+
+    <footer class="updater">
+      <span id="verLabel" class="muted"></span>
+      <button id="updBtn" class="upd-btn" hidden></button>
+    </footer>
   </div>
 
   <script src="../lib/csinterface.js"></script>
@@ -43,6 +49,7 @@
   <script src="../shared/stretch-warp.js"></script>
   <script src="../shared/fcpxml-transform.js"></script>
   <script src="../shared/bridge-premiere.js"></script>
+  <script src="../shared/updater.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

@@ -47,7 +47,23 @@ button.primary:disabled { opacity: 0.55; cursor: default; }
 .dot-red { background: #e0564f; }
 .note { margin-top: 4px; padding: 8px 10px; font-size: 11px; color: #aaa; background: #222; border-radius: 5px; line-height: 1.5; }
 
+.env-state { margin: -4px 0 10px; font-size: 11px; line-height: 1.5; min-height: 0; }
+.env-state.ok { color: #5f9e5f; }
+.env-state.warn { color: #d9b75a; padding: 7px 9px; background: #2a2620; border-radius: 5px; }
+
 .help { margin-top: 16px; font-size: 12px; color: #aaa; }
 .help summary { cursor: pointer; color: #888; user-select: none; }
 .help ol { margin: 8px 0; padding-left: 18px; line-height: 1.6; }
 .help .muted { color: #777; font-size: 11px; }
+
+footer.updater {
+  display: flex; align-items: center; gap: 10px; margin-top: 14px;
+  padding-top: 8px; border-top: 1px solid #2a2a2a;
+}
+footer.updater .muted { color: #666; font-size: 11px; }
+.upd-btn {
+  margin-left: auto; background: #2b3a2b; color: #8fce8f; border: 1px solid #3c553c;
+  border-radius: 5px; padding: 5px 10px; font-size: 11px; cursor: pointer;
+}
+.upd-btn:hover:not(:disabled) { background: #344734; }
+.upd-btn:disabled { opacity: 0.6; cursor: default; }
