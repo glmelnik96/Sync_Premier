@@ -55,6 +55,14 @@
   var FP_V = 9;            /* Ф3.2: гейт votes. На кейсе 5 с реальным приором пайплайна:
                               votes>=9 && conf>=1.75 → 83 клипа, 0 ложных; при 7 — 2 ложных. */
   var FP_C = 1.75;         /* Ф3.2: гейт confidence = votes / второй-пик-вне-±2с */
+  var FP_WIN2 = 600;       /* Ф3.2 раунд 2 (клипы без пина, приор уточнён раундом 1):
+                              широкое окно достаёт зоны, где предикт сидел на ложном
+                              плато ~400с (кейс 5, зона 065–077). */
+  var FP_C2 = 2.5;         /* Ф3.2 раунд 2: строже conf — на окне ±600с музыка даёт
+                              votes до 26 при conf 1.86 (P1138104); на бенче 2.5 →
+                              92 верных / 0 ложных, все 16 целевых Iris живы. */
+  var FP_ROUNDS = 4;       /* Ф3.2: максимум fp-раундов; 2+ повторяются, пока
+                              приносят новые пины (пины чинят warp → соседи). */
   var CLAR_TH = 0.15;      /* clarity-гейт базового пина: corr − второй пик вне ±2с.
                               Эмпирика кейса 5 (12 ложных пинов): у ложных clar ≤ 0.124
                               при corr до 0.78 (среда коррелирует), у верных медиана
@@ -316,24 +324,56 @@
             });
           });
           var fpBest = {}; /* key → {votes, tl, tc} — лучший гейт-матч по бэкбонам */
-          bbs.forEach(function (b) {
-            fpChain = fpChain.then(function () {
-              if (!fpClips.length) return;
-              return io.extractPcm(b.path).then(function (r) {
-                var refFp = AF.fingerprint(r.pcm, SyncCore.fft);
-                for (var q = 0; q < fpClips.length; q++) {
-                  var fc = fpClips[q];
-                  var priorTl = fc.tc + priorWarp(fc.tc);
-                  var mm = AF.match(refFp, fc.fp, { priorSec: priorTl - b.srcStartSec, winSec: FP_WIN });
-                  if (mm.offSec == null || mm.votes < FP_V) continue;
-                  if (mm.votes2 && mm.votes / mm.votes2 < FP_C) continue;
-                  if (!fpBest[fc.key] || mm.votes > fpBest[fc.key].votes)
-                    fpBest[fc.key] = { votes: mm.votes, tl: b.srcStartSec + mm.offSec, tc: fc.tc };
-                }
-              }, function () { /* бэкбон не читается — пропускаем */ });
+          /* один раунд: матч всех fpClips БЕЗ пина против всех бэкбонов.
+             priorsFn(tc) → массив кандидатов ОФСЕТА (tl−tc); winSec/confTh —
+             параметры раунда (см. FP_WIN2/FP_C2). */
+          var fpPass = function (priorsFn, winSec, confTh) {
+            var todo = [], chain = Promise.resolve(), ti;
+            for (ti = 0; ti < fpClips.length; ti++)
+              if (!fpBest.hasOwnProperty(fpClips[ti].key)) todo.push(fpClips[ti]);
+            if (!todo.length) return chain;
+            bbs.forEach(function (b) {
+              chain = chain.then(function () {
+                return io.extractPcm(b.path).then(function (r) {
+                  var refFp = AF.fingerprint(r.pcm, SyncCore.fft);
+                  for (var q = 0; q < todo.length; q++) {
+                    var fc = todo[q];
+                    var priors = priorsFn(fc.tc);
+                    for (var pr = 0; pr < priors.length; pr++) {
+                      var priorTl = fc.tc + priors[pr];
+                      var mm = AF.match(refFp, fc.fp, { priorSec: priorTl - b.srcStartSec, winSec: winSec });
+                      if (mm.offSec == null || mm.votes < FP_V) continue;
+                      if (mm.votes2 && mm.votes / mm.votes2 < confTh) continue;
+                      if (!fpBest[fc.key] || mm.votes > fpBest[fc.key].votes)
+                        fpBest[fc.key] = { votes: mm.votes, tl: b.srcStartSec + mm.offSec, tc: fc.tc };
+                    }
+                  }
+                }, function () { /* бэкбон не читается — пропускаем */ });
+              });
             });
-          });
-          fpChain = fpChain.then(function () {
+            return chain;
+          };
+          /* Ф3.2 раунды 2+: приор — ОБА фланга, не интерполяция. Rec-run TC
+             (P-камера): между клипами TC стоит, а время идёт → истинный off
+             между соседними пинами скачет на величину пауз (кейс 5: 073→078
+             off +1924с при Δtc=68с); интерполяция уводит приор за окно.
+             Истина всегда в [off левого пина, off правого пина] — два окна
+             ±FP_WIN2 от флангов покрывают диапазон с обоих концов. */
+          var flankPriors = function (ps) {
+            return function (tc) {
+              if (!ps.length) return [];
+              var pl = null, prt = null, fi;
+              for (fi = 0; fi < ps.length; fi++) {
+                if (ps[fi].tc <= tc) pl = ps[fi];
+                else { prt = ps[fi]; break; }
+              }
+              var out = [];
+              if (pl) out.push(pl.off);
+              if (prt && (!pl || Math.abs(prt.off - pl.off) > 1)) out.push(prt.off);
+              return out;
+            };
+          };
+          var mergeFp = function () { /* пины = не-fp пины + все fp-пины, LIS заново */
             var keep = [], nFp = 0, k, pi2;
             for (pi2 = 0; pi2 < pins.length; pi2++)
               if (!fpBest.hasOwnProperty(pins[pi2].key)) keep.push(pins[pi2]);
@@ -342,8 +382,36 @@
               nFp++;
             }
             if (nFp) pins = runLis(keep);
-            notes.push('fp-пинов: ' + nFp);
-          });
+            return nFp;
+          };
+          /* раунды 2+ (итеративно, до сходимости): приоры — фланги от пинов,
+             уточнённых предыдущими раундами; conf строже (FP_C2) — на широком
+             окне музыка даёт уверенные ложные. Итерация нужна: пины раунда N
+             дают новые фланги, и раунд N+1 достаёт соседей, чей приор был
+             отравлен тем же плато (кейс 5: 072/073 → 076/077). */
+          var fpCounts = [];
+          var fpRound = function (n) {
+            if (n > FP_ROUNDS) return Promise.resolve();
+            return fpPass(flankPriors(pins), FP_WIN2, FP_C2).then(function () {
+              var prev = fpCounts[fpCounts.length - 1];
+              var total = mergeFp();
+              if (total <= prev) return; /* сходимость — новых пинов нет */
+              fpCounts.push(total);
+              return fpRound(n + 1);
+            });
+          };
+          fpChain = fpChain
+            .then(function () { return fpPass(function (tc) { return [priorWarp(tc)]; }, FP_WIN, FP_C); })
+            .then(function () {
+              fpCounts.push(mergeFp());
+              return fpRound(2);
+            })
+            .then(function () {
+              var parts = ['r1: ' + fpCounts[0]], ri;
+              for (ri = 1; ri < fpCounts.length; ri++)
+                parts.push('+r' + (ri + 1) + ': ' + (fpCounts[ri] - fpCounts[ri - 1]));
+              notes.push('fp-пинов: ' + fpCounts[fpCounts.length - 1] + ' (' + parts.join(', ') + ')');
+            });
         }
         return fpChain.then(function () {
           /* 5. предикт: pin / цепочка от первого пина / warp-интерполяция */
