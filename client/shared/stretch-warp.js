@@ -49,6 +49,12 @@
   var LEFT_TH = 0.5;       /* левое расширение: порог */
   var LEFT_MIN_DUR = 30;   /* левое расширение: мин длина клипа, с (критично!) */
   var MIN_PINS = 3;        /* меньше — не трогаем устройство (остаётся rigid-TC) */
+  var FP_WIN = 60;         /* Ф3.2: окно приора fingerprint-матча, с (±). Глобальный поиск
+                              запрещён: повторяющаяся музыка даёт согласные ложные пики
+                              за тысячи секунд (47 ложных на полном прогоне кейса 5). */
+  var FP_V = 9;            /* Ф3.2: гейт votes. На кейсе 5 с реальным приором пайплайна:
+                              votes>=9 && conf>=1.75 → 83 клипа, 0 ложных; при 7 — 2 ложных. */
+  var FP_C = 1.75;         /* Ф3.2: гейт confidence = votes / второй-пик-вне-±2с */
   var CLAR_TH = 0.15;      /* clarity-гейт базового пина: corr − второй пик вне ±2с.
                               Эмпирика кейса 5 (12 ложных пинов): у ложных clar ≤ 0.124
                               при corr до 0.78 (среда коррелирует), у верных медиана
@@ -79,6 +85,19 @@
     return out;
   }
 
+  /* кусочно-линейный offset(tc) по пинам (Ф3.1 предикт и Ф3.2 приор fingerprint) */
+  function warpOf(pins) {
+    return function (tc) {
+      if (tc <= pins[0].tc) return pins[0].off;
+      if (tc >= pins[pins.length - 1].tc) return pins[pins.length - 1].off;
+      for (var w = 1; w < pins.length; w++) if (tc <= pins[w].tc) {
+        var pa = pins[w - 1], pb = pins[w], t = (tc - pa.tc) / (pb.tc - pa.tc || 1);
+        return pa.off + t * (pb.off - pa.off);
+      }
+      return pins[pins.length - 1].off;
+    };
+  }
+
   /* токен устройства по имени файла (как в fcpxml-transform): ZOOM0009_Tr1 → ZOOM0009.
      Консенсус требует РАЗНЫХ устройств: дорожки одного рекордера — почти дубликаты
      сигнала, их «согласие» не независимо. (Ложные консенсусы кейса 5 это НЕ убрало —
@@ -103,7 +122,8 @@
    * stretchInfo: result.stretch из applySyncToXml (pass 1):
    *   { frameSec, devices: [{ files: [{key, path, tcStartSec, inSec, durSec}],
    *                           backbones: [{path, srcStartSec, srcDurSec}] }] }
-   * io: { extractEnvelope, SyncCore }
+   * io: { extractEnvelope, SyncCore, extractPcm?, AudioFingerprint? } — последние два
+   *     включают Ф3.2 (fingerprint-пины); без них поведение Ф3.1 не меняется
    * → Promise<{ targets: {key → targetFrames}, pinned: {key → 1 для ДОВЕРЕННЫХ пинов
    *   (подтверждены звуком → без Rose)}, report: строка-сводка }>
    */
@@ -275,33 +295,77 @@
           if (addedF.length) pins = runLis(pins.concat(addedF));
           notes.push('flux-пинов: кандидатов ' + addedF.length);
         }
-        /* 5. предикт: pin / цепочка от первого пина / warp-интерполяция */
-        var tlOf = {}, trustOf = {}, pk;
-        for (pk = 0; pk < pins.length; pk++) {
-          tlOf[pins[pk].key] = pins[pk].tl; trustOf[pins[pk].key] = pins[pk].trusted;
+        /* Ф3.2. fingerprint-пины (landmark/Shazam): для клипов, где RMS-NCC слеп (накамерный
+           микрофон тонет в шуме — истина не максимум корреляции), совпадение спектральных
+           ориентиров находит офсет. Приор = текущий предикт warp; поиск ТОЛЬКО в окне
+           ±FP_WIN (глобальный ловит повторяющуюся музыку). Гейт FP_V/FP_C: на кейсе 5 —
+           83 клипа, 0 ложных, медиана |err| 0.01с → пины trusted (снятие Rose), LIS заново. */
+        var fpChain = Promise.resolve();
+        var AF = io.AudioFingerprint;
+        if (io.extractPcm && AF && bbs.length) {
+          var priorWarp = warpOf(pins); /* приор — предикт ДО fp-пинов */
+          var fpClips = []; /* {key, tc, fp} */
+          dev.files.forEach(function (f) {
+            fpChain = fpChain.then(function () {
+              var segDur = Math.min(f.durSec, SEG_MAX_SEC);
+              if (!(segDur >= PIN_MIN_DUR) || f.tcStartSec == null) return;
+              return io.extractPcm(f.path, { startSec: f.inSec, durSec: segDur }).then(function (r) {
+                var fp = AF.fingerprint(r.pcm, SyncCore.fft);
+                if (fp.size) fpClips.push({ key: f.key, tc: f.tcStartSec, fp: fp });
+              }, function () { /* клип не читается — без fp-пина */ });
+            });
+          });
+          var fpBest = {}; /* key → {votes, tl, tc} — лучший гейт-матч по бэкбонам */
+          bbs.forEach(function (b) {
+            fpChain = fpChain.then(function () {
+              if (!fpClips.length) return;
+              return io.extractPcm(b.path).then(function (r) {
+                var refFp = AF.fingerprint(r.pcm, SyncCore.fft);
+                for (var q = 0; q < fpClips.length; q++) {
+                  var fc = fpClips[q];
+                  var priorTl = fc.tc + priorWarp(fc.tc);
+                  var mm = AF.match(refFp, fc.fp, { priorSec: priorTl - b.srcStartSec, winSec: FP_WIN });
+                  if (mm.offSec == null || mm.votes < FP_V) continue;
+                  if (mm.votes2 && mm.votes / mm.votes2 < FP_C) continue;
+                  if (!fpBest[fc.key] || mm.votes > fpBest[fc.key].votes)
+                    fpBest[fc.key] = { votes: mm.votes, tl: b.srcStartSec + mm.offSec, tc: fc.tc };
+                }
+              }, function () { /* бэкбон не читается — пропускаем */ });
+            });
+          });
+          fpChain = fpChain.then(function () {
+            var keep = [], nFp = 0, k, pi2;
+            for (pi2 = 0; pi2 < pins.length; pi2++)
+              if (!fpBest.hasOwnProperty(pins[pi2].key)) keep.push(pins[pi2]);
+            for (k in fpBest) if (fpBest.hasOwnProperty(k)) {
+              keep.push({ key: k, tc: fpBest[k].tc, tl: fpBest[k].tl, trusted: 1 });
+              nFp++;
+            }
+            if (nFp) pins = runLis(keep);
+            notes.push('fp-пинов: ' + nFp);
+          });
         }
-        var warp = function (tc) {
-          if (tc <= pins[0].tc) return pins[0].off;
-          if (tc >= pins[pins.length - 1].tc) return pins[pins.length - 1].off;
-          for (var w = 1; w < pins.length; w++) if (tc <= pins[w].tc) {
-            var pa = pins[w - 1], pb = pins[w], t = (tc - pa.tc) / (pb.tc - pa.tc || 1);
-            return pa.off + t * (pb.off - pa.off);
+        return fpChain.then(function () {
+          /* 5. предикт: pin / цепочка от первого пина / warp-интерполяция */
+          var tlOf = {}, trustOf = {}, pk;
+          for (pk = 0; pk < pins.length; pk++) {
+            tlOf[pins[pk].key] = pins[pk].tl; trustOf[pins[pk].key] = pins[pk].trusted;
           }
-          return pins[pins.length - 1].off;
-        };
-        var nPin = 0, nChain = 0, nWarp = 0;
-        for (si = 0; si < scans.length; si++) {
-          var sc3 = scans[si];
-          if (sc3.tc == null) continue;
-          var tl;
-          if (tlOf.hasOwnProperty(sc3.key)) { tl = tlOf[sc3.key]; if (trustOf[sc3.key]) pinned[sc3.key] = 1; nPin++; }
-          else if (sc3.tc < pins[0].tc) { tl = sc3.tc + pins[0].off; nChain++; }
-          else { tl = sc3.tc + warp(sc3.tc); nWarp++; }
-          targets[sc3.key] = Math.round(tl / FRAME);
-        }
-        var nTrust = 0;
-        for (pk = 0; pk < pins.length; pk++) if (pins[pk].trusted) nTrust++;
-        notes.push('устройство: пинов ' + pins.length + ' (pin=' + nPin + ' chain=' + nChain + ' warp=' + nWarp + ', доверенных ' + nTrust + '), бэкбонов ' + bbs.length);
+          var warp = warpOf(pins);
+          var nPin = 0, nChain = 0, nWarp = 0;
+          for (si = 0; si < scans.length; si++) {
+            var sc3 = scans[si];
+            if (sc3.tc == null) continue;
+            var tl;
+            if (tlOf.hasOwnProperty(sc3.key)) { tl = tlOf[sc3.key]; if (trustOf[sc3.key]) pinned[sc3.key] = 1; nPin++; }
+            else if (sc3.tc < pins[0].tc) { tl = sc3.tc + pins[0].off; nChain++; }
+            else { tl = sc3.tc + warp(sc3.tc); nWarp++; }
+            targets[sc3.key] = Math.round(tl / FRAME);
+          }
+          var nTrust = 0;
+          for (pk = 0; pk < pins.length; pk++) if (pins[pk].trusted) nTrust++;
+          notes.push('устройство: пинов ' + pins.length + ' (pin=' + nPin + ' chain=' + nChain + ' warp=' + nWarp + ', доверенных ' + nTrust + '), бэкбонов ' + bbs.length);
+        });
       });
     }
 

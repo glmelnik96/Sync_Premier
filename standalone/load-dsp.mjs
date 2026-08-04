@@ -19,13 +19,13 @@ export function loadDsp() {
   const realRequire = createRequire(import.meta.url);
   const ctx = {
     Array, Object, Math, String, Number, JSON, Error, RegExp, console, undefined,
-    Float64Array, Float32Array, Int16Array, Uint8Array, Map, Promise, setTimeout, Date,
+    Float64Array, Float32Array, Int16Array, Int32Array, Uint8Array, Map, Promise, setTimeout, Date,
     require: realRequire, process, Buffer,
     module: { exports: {} }, exports: {}
   };
   ctx.global = ctx; ctx.window = ctx; ctx.globalThis = ctx;
   vm.createContext(ctx);
-  for (const f of ['sync-core.js', 'sync-graph.js', 'track-extractor.js', 'audio-envelope.js', 'sync-runner.js', 'stretch-warp.js', 'fcpxml-transform.js']) {
+  for (const f of ['sync-core.js', 'sync-graph.js', 'track-extractor.js', 'audio-envelope.js', 'audio-fingerprint.js', 'sync-runner.js', 'stretch-warp.js', 'fcpxml-transform.js']) {
     vm.runInContext(readFileSync(resolve(sharedDir, f), 'utf8'), ctx, { filename: f });
   }
   return {
@@ -34,6 +34,7 @@ export function loadDsp() {
     SyncRunner: ctx.SyncRunner,
     StretchWarp: ctx.StretchWarp,
     AudioEnvelope: ctx.AudioEnvelope,
+    AudioFingerprint: ctx.AudioFingerprint,
     TrackExtractor: ctx.TrackExtractor,
     FcpXmlTransform: ctx.FcpXmlTransform
   };

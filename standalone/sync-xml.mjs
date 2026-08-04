@@ -34,7 +34,8 @@ async function main() {
   if (res.stretch && process.env.STRETCH_WARP !== '0') {
     console.log('stretch-камера обнаружена — band-pass скан и warp-раскладка…');
     const sw = await dsp.StretchWarp.computeTargets(res.stretch,
-      { extractEnvelope: dsp.AudioEnvelope.extractEnvelope, SyncCore: dsp.SyncCore });
+      { extractEnvelope: dsp.AudioEnvelope.extractEnvelope, SyncCore: dsp.SyncCore,
+        extractPcm: dsp.AudioEnvelope.extractPcm, AudioFingerprint: dsp.AudioFingerprint });
     console.log('stretch-warp: ' + sw.report);
     if (Object.keys(sw.targets).length)
       res = T.applySyncToXml(xml, clips, rows, { ...xopt, stretchTargets: sw.targets, stretchPinned: sw.pinned });

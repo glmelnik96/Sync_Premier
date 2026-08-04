@@ -68,7 +68,8 @@
             setProgress(0.8);
             setStatus('3/4 · Растянутая камера: warp-раскладка по звуку…', 'busy');
             pass2 = window.StretchWarp.computeTargets(res.stretch,
-              { extractEnvelope: window.AudioEnvelope.extractEnvelope, SyncCore: window.SyncCore })
+              { extractEnvelope: window.AudioEnvelope.extractEnvelope, SyncCore: window.SyncCore,
+                extractPcm: window.AudioEnvelope.extractPcm, AudioFingerprint: window.AudioFingerprint })
               .then(function (sw) {
                 var hasT = false; for (var k in sw.targets) { if (sw.targets.hasOwnProperty(k)) { hasT = true; break; } }
                 if (!hasT) return res;

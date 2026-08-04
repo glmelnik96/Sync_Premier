@@ -48,7 +48,8 @@ for (const N of CASES) {
   let res = T.applySyncToXml(xml, clips, rows, xopt);
   if (res.stretch) { // Ф3.1: warp stretch-камеры (двухпроходная схема, как sync-xml.mjs)
     const sw = await dsp.StretchWarp.computeTargets(res.stretch,
-      { extractEnvelope: dsp.AudioEnvelope.extractEnvelope, SyncCore: dsp.SyncCore });
+      { extractEnvelope: dsp.AudioEnvelope.extractEnvelope, SyncCore: dsp.SyncCore,
+        extractPcm: dsp.AudioEnvelope.extractPcm, AudioFingerprint: dsp.AudioFingerprint });
     console.log(`  stretch-warp: ${sw.report}`);
     if (Object.keys(sw.targets).length)
       res = T.applySyncToXml(xml, clips, rows, { ...xopt, stretchTargets: sw.targets, stretchPinned: sw.pinned });

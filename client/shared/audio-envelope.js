@@ -66,12 +66,10 @@
     return { dtSec: win / sr, env: env };
   }
 
-  /** Извлечь огибающую из аудиофайла (опц. сегмент [startSec, durSec], опц. windowMs).
-   *  opt.bandPass: true → полосовой фильтр речи 150–4000 Гц (Ф3.1: подавляет ветер/гул
-   *  накамерного микрофона stretch-камеры; для базового пайплайна НЕ используется). */
-  function extractEnvelope(path, opt) {
+  /** ffmpeg → моно-PCM Float32 @8кГц (опц. сегмент [startSec, durSec], опц. bandPass).
+   *  Общий декод для extractEnvelope и extractPcm (Ф3.2: fingerprint-пины). */
+  function extractPcm(path, opt) {
     opt = opt || {};
-    var winMs = (typeof opt.windowMs === 'number') ? opt.windowMs : WINDOW_MS;
     return new Promise(function (resolve, reject) {
       if (!hasNode()) return reject(new Error('Node.js недоступен'));
       var bin = findFfmpegPath();
@@ -90,14 +88,25 @@
           var n = Math.floor(buf.length / 2);
           var pcm = new Float32Array(n);
           for (var i = 0; i < n; i++) pcm[i] = buf.readInt16LE(i * 2) / 32768;
-          resolve(pcmToEnvelope(pcm, SAMPLE_RATE, winMs));
+          resolve({ pcm: pcm, sampleRate: SAMPLE_RATE });
         });
+    });
+  }
+
+  /** Извлечь огибающую из аудиофайла (опц. сегмент [startSec, durSec], опц. windowMs).
+   *  opt.bandPass: true → полосовой фильтр речи 150–4000 Гц (Ф3.1: подавляет ветер/гул
+   *  накамерного микрофона stretch-камеры; для базового пайплайна НЕ используется). */
+  function extractEnvelope(path, opt) {
+    opt = opt || {};
+    var winMs = (typeof opt.windowMs === 'number') ? opt.windowMs : WINDOW_MS;
+    return extractPcm(path, opt).then(function (r) {
+      return pcmToEnvelope(r.pcm, r.sampleRate, winMs);
     });
   }
 
   global.AudioEnvelope = {
     SAMPLE_RATE: SAMPLE_RATE, WINDOW_MS: WINDOW_MS,
     hasNode: hasNode, findFfmpegPath: findFfmpegPath,
-    pcmToEnvelope: pcmToEnvelope, extractEnvelope: extractEnvelope
+    pcmToEnvelope: pcmToEnvelope, extractEnvelope: extractEnvelope, extractPcm: extractPcm
   };
 })(typeof window !== 'undefined' ? window : this);
