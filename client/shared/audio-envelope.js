@@ -14,6 +14,23 @@
      (проект в сотни клипов → сотни fs.existsSync + subprocess `where ffmpeg`).
      Кешируем только НАЙДЕННЫЙ путь; null не кешируем — чтобы установка ffmpeg
      посреди сессии подхватилась при следующем прогоне. */
+  /* ── Полная остановка: реестр живых ffmpeg-процессов + флаг аборта.
+     abort() убивает все живые процессы; текущие и будущие extract-вызовы
+     реджектятся (e.aborted=true) до resetAbort() перед новым прогоном.
+     Промис-цепочки пайплайна (SyncRunner/StretchWarp) без catch — реджект
+     долетает до панели и валит весь процесс. Чисто-CPU фазы (FFT-графы)
+     блокируют поток и прерываются на ближайшем extract-вызове. */
+  var abortFlag = false;
+  var liveProcs = [];
+  function abortError() { var e = new Error('Остановлено пользователем'); e.aborted = true; return e; }
+  function abort() {
+    abortFlag = true;
+    for (var i = 0; i < liveProcs.length; i++) { try { liveProcs[i].kill('SIGKILL'); } catch (e) {} }
+    liveProcs.length = 0;
+  }
+  function resetAbort() { abortFlag = false; }
+  function isAborted() { return abortFlag; }
+
   var ffmpegPathMemo = null;
   function findFfmpegPath() {
     if (ffmpegPathMemo) return ffmpegPathMemo;
@@ -71,6 +88,7 @@
   function extractPcm(path, opt) {
     opt = opt || {};
     return new Promise(function (resolve, reject) {
+      if (abortFlag) return reject(abortError());
       if (!hasNode()) return reject(new Error('Node.js недоступен'));
       var bin = findFfmpegPath();
       if (!bin) return reject(new Error('ffmpeg не найден — установите ffmpeg (напр. winget install ffmpeg) и повторите'));
@@ -81,8 +99,12 @@
       if (opt.bandPass) args.push('-af', 'highpass=f=150,lowpass=f=4000');
       args.push('-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', '-');
       var execFile = require('child_process').execFile;
-      execFile(bin, args, { timeout: 600000, maxBuffer: 1024 * 1024 * 1024, encoding: 'buffer' },
+      var child = execFile(bin, args, { timeout: 600000, maxBuffer: 1024 * 1024 * 1024, encoding: 'buffer' },
         function (err, stdout) {
+          var ix = liveProcs.indexOf(child);
+          if (ix >= 0) liveProcs.splice(ix, 1);
+          /* убитый процесс отдаёт частичный stdout — при аборте это мусор, не PCM */
+          if (abortFlag) return reject(abortError());
           if (err && !(stdout && stdout.length)) return reject(new Error('ffmpeg: ' + String(err.message || err)));
           var buf = stdout;
           var n = Math.floor(buf.length / 2);
@@ -90,6 +112,7 @@
           for (var i = 0; i < n; i++) pcm[i] = buf.readInt16LE(i * 2) / 32768;
           resolve({ pcm: pcm, sampleRate: SAMPLE_RATE });
         });
+      liveProcs.push(child);
     });
   }
 
@@ -107,6 +130,7 @@
   global.AudioEnvelope = {
     SAMPLE_RATE: SAMPLE_RATE, WINDOW_MS: WINDOW_MS,
     hasNode: hasNode, findFfmpegPath: findFfmpegPath,
-    pcmToEnvelope: pcmToEnvelope, extractEnvelope: extractEnvelope, extractPcm: extractPcm
+    pcmToEnvelope: pcmToEnvelope, extractEnvelope: extractEnvelope, extractPcm: extractPcm,
+    abort: abort, resetAbort: resetAbort, isAborted: isAborted
   };
 })(typeof window !== 'undefined' ? window : this);

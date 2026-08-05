@@ -17,3 +17,14 @@ test('pcmToEnvelope: окно 5мс @8кГц → dt=0.005, RMS корректе�
   assert.ok(Math.abs(env[1] - 0.5) < 1e-6);
   assert.ok(Math.abs(env[2] - 1) < 1e-6);
 });
+
+test('abort: extractPcm реджектится с e.aborted до resetAbort', async () => {
+  const AE = loadAudioEnvelope();
+  AE.abort();
+  assert.equal(AE.isAborted(), true);
+  await assert.rejects(AE.extractPcm('nonexistent.wav'), (e) => e.aborted === true);
+  AE.resetAbort();
+  assert.equal(AE.isAborted(), false);
+  /* после сброса реджект другой (нет файла/ffmpeg), но НЕ aborted */
+  await assert.rejects(AE.extractPcm('nonexistent.wav'), (e) => !e.aborted);
+});

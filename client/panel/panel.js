@@ -2,6 +2,7 @@
   'use strict';
 
   var btn = document.getElementById('syncXml');
+  var stopBtn = document.getElementById('stopBtn');
   var statusEl = document.getElementById('status');
   var resultEl = document.getElementById('result');
   var progEl = document.getElementById('progress');
@@ -21,8 +22,25 @@
   function setBusy(busy) {
     btn.disabled = busy;
     btn.textContent = busy ? 'Синхронизация…' : 'Синхронизировать';
+    stopBtn.hidden = !busy;
+    if (busy) { stopBtn.disabled = false; stopBtn.textContent = 'Остановить'; }
   }
   function showResult(html) { resultEl.innerHTML = html || ''; }
+
+  /* ── Полная остановка: убить живые ffmpeg + реджектить будущие extract-вызовы
+     (AudioEnvelope.abort) → промис-цепочка падает с e.aborted → catch внизу
+     показывает «Остановлено» вместо ошибки. Чисто-CPU фазы блокируют поток —
+     клик обработается и прервёт процесс на ближайшем extract / границе стадии. */
+  stopBtn.addEventListener('click', function () {
+    stopBtn.disabled = true; stopBtn.textContent = 'Остановка…';
+    window.AudioEnvelope.abort();
+  });
+  function checkAborted() {
+    if (window.AudioEnvelope.isAborted()) {
+      var e = new Error('Остановлено пользователем'); e.aborted = true; throw e;
+    }
+  }
+  function showStopped() { setStatus('Остановлено'); setProgress(null); setBusy(false); }
 
   /* ГИБРИД-ПАЙПЛАЙН (FCP7 XML round-trip, БЕЗ мутации живого таймлайна):
      host экспортирует активную секвенцию в FCP7 XML → панель парсит, гоняет DSP
@@ -34,9 +52,11 @@
     var fs;
     try { fs = require('fs'); } catch (e) { setStatus('Node.js недоступен в панели (нужен --enable-nodejs)', 'error'); return; }
 
+    window.AudioEnvelope.resetAbort();
     setBusy(true); showResult(''); setProgress(0.05);
     setStatus('1/4 · Экспорт секвенции…', 'busy');
     window.PremiereBridge.exportActiveSequenceXml(function (err, exp) {
+      if (window.AudioEnvelope.isAborted()) { showStopped(); return; }
       if (err || !exp || !exp.path) { setStatus('Ошибка экспорта: ' + (err ? err.message : (exp && exp.error) || 'нет активной секвенции'), 'error'); setProgress(0.05, 'error'); setBusy(false); return; }
       var xml;
       try { xml = fs.readFileSync(exp.path, 'utf8'); } catch (e2) { setStatus('Не удалось прочитать XML: ' + e2.message, 'error'); setProgress(0.1, 'error'); setBusy(false); return; }
@@ -58,6 +78,7 @@
       window.SyncRunner.runClipSync(snapshot, { extractEnvelope: window.AudioEnvelope.extractEnvelope },
         { refGate: 0.45, clipGate: 0.4, coarseWindowMs: 20 })
         .then(function (rows) {
+          checkAborted();
           setProgress(0.7);
           setStatus('3/4 · Сборка синхро-секвенции…', 'busy');
           var xopt = { frameSec: rate.frameSec, ticksPerFrame: rate.ticksPerFrame };
@@ -81,6 +102,7 @@
           return pass2;
         })
         .then(function (res) {
+          checkAborted(); /* не писать и не импортировать XML после остановки */
           /* Нечего синхронизировать: ни один источник не подтверждён звуком и не размещён
              по timecode. НЕ создаём красную секвенцию из «нуля» — честно предупреждаем. */
           if (res.stats.nothingToSync) {
@@ -104,7 +126,10 @@
             renderSummary(s, names);
           });
         })
-        .catch(function (e4) { setStatus('Ошибка синхронизации: ' + e4.message, 'error'); setProgress(0.7, 'error'); setBusy(false); });
+        .catch(function (e4) {
+          if (e4 && e4.aborted) { showStopped(); return; }
+          setStatus('Ошибка синхронизации: ' + e4.message, 'error'); setProgress(0.7, 'error'); setBusy(false);
+        });
     });
   });
 
