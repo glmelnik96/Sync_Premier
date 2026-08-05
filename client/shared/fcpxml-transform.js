@@ -667,13 +667,38 @@
         var arr = byTrack[tk2]; if (arr.length < 2) continue;
         arr.sort(function (x, y) { return x.plan.start - y.plan.start; });
         var kept = null;
+        /* stretch-пин = позиция ПОДТВЕРЖДЕНА звуком (fingerprint) → при конфликте с
+           интерполированным (warp/chain) соседом пин выигрывает независимо от conf
+           (у rigid-TC оба берут conf=1.0 → старый тай-брейк «поздний проигрывает»
+           выбрасывал подтверждённый пин: кейс P1138030 в К5). conf — только тай-брейк.
+           МИКРО-перекрытие (≤2с) пина с интерполированным соседом — не ошибка позиции,
+           а погрешность warp-интерполяции: соседа не выбрасываем, а сдвигаем встык
+           (весь инстанс, чтобы не рвать линковку) — выживают оба, как в Syncaila. */
+        var isPin = function (cl) {
+          return opt.stretchPinned && opt.stretchPinned[cl.path + '|' + cl.start] ? 1 : 0;
+        };
+        var shiftInstance = function (cl, d) {
+          for (var z2 = 0; z2 < clips.length; z2++) {
+            var zc2 = clips[z2];
+            if (zc2.plan && zc2.path === cl.path && zc2.start === cl.start) { zc2.plan.start += d; zc2.plan.end += d; }
+          }
+        };
+        var microOvF = Math.round(2 / FRAME);
         for (var ii = 0; ii < arr.length; ii++) {
           var cur = arr[ii];
           if (cur.plan.status === 'unsynced') continue; /* уже демотирован как копия инстанса */
           if (kept && cur.plan.start < kept.plan.end - 1) {
-            var keepCur = (cur.plan.conf || 0) > (kept.plan.conf || 0);
-            demoteInstance(keepCur ? kept : cur);
-            if (keepCur) kept = cur;
+            var pinC = isPin(cur), pinK = isPin(kept), ovF = kept.plan.end - cur.plan.start;
+            if (pinC !== pinK && ovF <= microOvF) {
+              /* пин + микро-перекрытие: сдвигаем НЕ-пин встык (ранний — влево, поздний — вправо) */
+              if (pinC) shiftInstance(kept, -ovF); else shiftInstance(cur, ovF);
+              kept = cur.plan.end > kept.plan.end ? cur : kept;
+            } else {
+              var keepCur = pinC !== pinK ? pinC > pinK
+                : (cur.plan.conf || 0) > (kept.plan.conf || 0);
+              demoteInstance(keepCur ? kept : cur);
+              if (keepCur) kept = cur;
+            }
           } else kept = cur;
         }
       }
