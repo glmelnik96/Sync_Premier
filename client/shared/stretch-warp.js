@@ -340,8 +340,13 @@
                     var fc = todo[q];
                     var priors = priorsFn(fc.tc);
                     for (var pr = 0; pr < priors.length; pr++) {
-                      var priorTl = fc.tc + priors[pr];
-                      var mm = AF.match(refFp, fc.fp, { priorSec: priorTl - b.srcStartSec, winSec: winSec });
+                      /* приор — число (офсет) или {off, win} (bridge-раунд с
+                         индивидуальной шириной окна) */
+                      var pOff = typeof priors[pr] === 'number' ? priors[pr] : priors[pr].off;
+                      var pWin = typeof priors[pr] === 'number' ? winSec : priors[pr].win;
+                      var priorTl = fc.tc + pOff;
+                      var mm = AF.match(refFp, fc.fp, { priorSec: priorTl - b.srcStartSec, winSec: pWin });
+                      if (io.fpLog && typeof priors[pr] !== 'number') io.fpLog({ key: fc.key, bb: b.path, off: pOff, win: pWin, votes: mm.votes, votes2: mm.votes2, offSec: mm.offSec });
                       if (mm.offSec == null || mm.votes < FP_V) continue;
                       if (mm.votes2 && mm.votes / mm.votes2 < confTh) continue;
                       if (!fpBest[fc.key] || mm.votes > fpBest[fc.key].votes)
@@ -400,11 +405,41 @@
               return fpRound(n + 1);
             });
           };
+          /* Ф3.3 bridge-раунд: клипы без пина, у которых офсеты флангов разошлись
+             сильнее 2·FP_WIN2 (мёртвая зона: rec-run TC стоит, время идёт — off
+             скачет на тысячи секунд; кейс 5 зона 0012→0013: ~2200с). Для rec-run
+             off(tc) монотонен → истина ГАРАНТИРОВАННО в [off_l, off_r]; фланговые
+             окна ±FP_WIN2 не покрывают середину. Приор = центр диапазона, окно =
+             полуразмах + FP_WIN2. Гейт тот же строгий FP_C2 (широкое окно — та же
+             защита от музыки, что и в раунде 2). */
+          var bridgePriors = function (ps) {
+            return function (tc) {
+              var pl = null, prt = null, fi;
+              for (fi = 0; fi < ps.length; fi++) {
+                if (ps[fi].tc <= tc) pl = ps[fi];
+                else { prt = ps[fi]; break; }
+              }
+              if (!pl || !prt) { if (io.fpLog) io.fpLog({ bridge: 1, tc: tc, noFlank: !pl ? 'left' : 'right' }); return []; }
+              var spread = prt.off - pl.off;
+              if (Math.abs(spread) <= 2 * FP_WIN2) { if (io.fpLog) io.fpLog({ bridge: 1, tc: tc, covered: spread }); return []; }
+              if (io.fpLog) io.fpLog({ bridge: 1, tc: tc, offL: pl.off, offR: prt.off, spread: spread });
+              return [{ off: pl.off + spread / 2, win: Math.abs(spread) / 2 + FP_WIN2 }];
+            };
+          };
           fpChain = fpChain
             .then(function () { return fpPass(function (tc) { return [priorWarp(tc)]; }, FP_WIN, FP_C); })
             .then(function () {
               fpCounts.push(mergeFp());
               return fpRound(2);
+            })
+            .then(function () {
+              /* bridge после сходимости фланговых раундов; новые пины → ещё
+                 итерация фланговых (мостовой пин даёт близкие фланги соседям) */
+              return fpPass(bridgePriors(pins), FP_WIN2, FP_C2).then(function () {
+                var prev = fpCounts[fpCounts.length - 1];
+                var total = mergeFp();
+                if (total > prev) { fpCounts.push(total); return fpRound(fpCounts.length); }
+              });
             })
             .then(function () {
               var parts = ['r1: ' + fpCounts[0]], ri;
